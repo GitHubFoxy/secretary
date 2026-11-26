@@ -39,6 +39,7 @@ export function openDatabase(path: string) {
   db.run(`CREATE TABLE IF NOT EXISTS pending_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, urgent INTEGER NOT NULL, text TEXT NOT NULL, images TEXT NOT NULL)`);
   addColumn('pending_messages', 'in_flight INTEGER NOT NULL DEFAULT 0');
   addColumn('pending_messages', 'voice INTEGER NOT NULL DEFAULT 0');
+  db.run(`CREATE TABLE IF NOT EXISTS schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, text TEXT NOT NULL, cron TEXT, next_run INTEGER, last_run INTEGER)`);
   db.run(`CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, session_id INTEGER NOT NULL, text TEXT NOT NULL, updated_at TEXT NOT NULL)`);
   db.run(`CREATE TABLE IF NOT EXISTS drafts (session_id INTEGER PRIMARY KEY, text TEXT NOT NULL, updated_at TEXT NOT NULL)`);
   db.run("CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(text, session_id UNINDEXED, time UNINDEXED, event_id UNINDEXED)");

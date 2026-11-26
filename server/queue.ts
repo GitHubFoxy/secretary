@@ -29,8 +29,12 @@ export class MessageQueue {
   has(item: Message) { return this.items.includes(item); }
 
   // Urgent messages stand before ordinary ones, each group in arrival order.
-  add(text: string, images: Image[], urgent: boolean, voice = false, speechTarget?: (message: object) => void, files: FileAttachment[] = [], system = false) {
-    const saved = this.db.query('INSERT INTO pending_messages (session_id, urgent, text, images, voice) VALUES (?, ?, ?, ?, ?)').run(this.sessionId, urgent ? 1 : 0, text, JSON.stringify({images, files, system}), voice ? 1 : 0);
+  add(text: string, images: Image[], urgent: boolean, voice = false, speechTarget?: (message: object) => void, files: FileAttachment[] = [], system = false, commit?: () => void) {
+    const saved = this.db.transaction(() => {
+      const row = this.db.query('INSERT INTO pending_messages (session_id, urgent, text, images, voice) VALUES (?, ?, ?, ?, ?)').run(this.sessionId, urgent ? 1 : 0, text, JSON.stringify({images, files, system}), voice ? 1 : 0);
+      commit?.();
+      return row;
+    })();
     const item: Message = { id: Number(saved.lastInsertRowid), text, images, files, urgent, voice, speechTarget, system };
     this.items.splice(urgent ? this.items.filter(m => m.urgent).length : this.items.length, 0, item);
     this.publishQueue();

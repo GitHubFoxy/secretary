@@ -28,6 +28,9 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
     const target = isSecretary ? 'Specialist' : 'Worker';
     const targetGen = isSecretary ? 'Specialists' : 'твоих Workers';
     return [
+      ['schedule_add', 'Создать расписание: cron из пяти полей или at (ISO 8601 с часовым поясом). Cron использует часовой пояс Host.', { message: { type: 'string' }, session_id: { type: 'number' }, cron: { type: 'string' }, at: { type: 'string' } }, ['message']],
+      ['schedule_list', 'Показать доступные расписания.', {}, []],
+      ['schedule_remove', 'Удалить расписание по id.', { id: { type: 'number' } }, ['id']],
       ['recall', 'Найти сообщения в истории своей Session.', { query: { type: 'string' } }, ['query']],
       [
         'list',
@@ -112,7 +115,15 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
   }
 
   async function call(callerId: number, isSecretary: boolean, name: string, args: any) {
+    const allowed = isSecretary ? sessions.list().filter(s => s.id === SECRETARY_ID || isSpecialist(s)).map(s => s.id) : [callerId, SECRETARY_ID];
     switch (name) {
+      case 'schedule_add': {
+        const target = args.session_id ?? callerId;
+        if (!allowed.includes(target)) throw new Error('Нет доступа к Session');
+        return sessions.schedules.add(target, args.message, args.cron, args.at);
+      }
+      case 'schedule_list': return sessions.schedules.list(allowed);
+      case 'schedule_remove': return sessions.schedules.remove(args.id, allowed);
       case 'recall': {
         if (typeof args.query !== 'string') throw new Error('Укажите query');
         return sessions.recall(callerId, args.query);
