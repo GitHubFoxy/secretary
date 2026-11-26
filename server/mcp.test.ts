@@ -60,7 +60,7 @@ test('Secretary Agent: list отдаёт сессии и модели, send со
   servers.push(env.server);
 
   const tools = await env.rpc(1, 'tools/list');
-  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['recall', 'list', 'send', 'read', 'stop', 'send_file', 'day_summary', 'report_issue']);
+  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['schedule_add', 'schedule_list', 'schedule_remove', 'recall', 'list', 'send', 'read', 'stop', 'send_file', 'day_summary', 'report_issue']);
 
   const listed = await env.callTool(1, 'list');
   expect(listed.isError).toBe(false);
@@ -267,4 +267,18 @@ test('day_summary показывает события дня только Secret
   expect((await env.callTool(1, 'day_summary', { date: '2024-02-30' })).isError).toBe(true);
   expect((await env.callTool(created.data.id, 'day_summary')).isError).toBe(true);
   expect((await env.callTool(1, 'day_summary', { date: '2000-01-01' })).data.sessions).toEqual([]);
+});
+
+test('расписания доступны Specialist только для себя и Secretary Agent', async () => {
+  const env = setup();
+  servers.push(env.server);
+  const first = (await env.callTool(1, 'send', { name: 'A', folder: '/tmp/a', message: 'старт' })).data.id;
+  const second = (await env.callTool(1, 'send', { name: 'B', folder: '/tmp/b', message: 'старт' })).data.id;
+  const worker = (await env.callTool(first, 'send', { name: 'worker', message: 'старт' })).data.id;
+  expect((await env.callTool(first, 'schedule_add', { message: 'себе', cron: '* * * * *' })).isError).toBe(false);
+  expect((await env.callTool(first, 'schedule_add', { message: 'Secretary', session_id: 1, cron: '* * * * *' })).isError).toBe(false);
+  expect((await env.callTool(first, 'schedule_add', { message: 'чужой', session_id: second, cron: '* * * * *' })).isError).toBe(true);
+  expect((await env.callTool(first, 'schedule_add', { message: 'worker', session_id: worker, cron: '* * * * *' })).isError).toBe(true);
+  expect((await env.callTool(first, 'schedule_list')).data).toHaveLength(2);
+  expect((await env.rpc(worker, 'tools/list')).status).toBe(401);
 });

@@ -169,5 +169,7 @@ const server = Bun.serve({
 sessions.load(secretaryFolder);
 serveMcp(sessions);
 sessions.resumePending();
+sessions.schedules.tick();
+setInterval(() => sessions.schedules.tick(), 30_000);
 
 console.log(`Secretary: ${server.url}`);

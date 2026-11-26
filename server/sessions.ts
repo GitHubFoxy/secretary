@@ -1,3 +1,4 @@
+import { Schedules } from './schedules';
 import { recall } from './database';
 import type { Database } from 'bun:sqlite';
 import { chatHistory, chatMessage, reportText } from './chat';
@@ -22,6 +23,7 @@ type Options = {
 
 // All Sessions of the Host and the rules for them. The browser and the Secretary Agent (through MCP) are two adapters over this.
 export class Sessions {
+  readonly schedules: Schedules;
   private all = new Map<number, Session>();
   private folder = '';
   private tokens = new Map<number, string>();
@@ -31,7 +33,7 @@ export class Sessions {
     return !!token && authorization === `Bearer ${token}`;
   }
 
-  constructor(private db: Database, private options: Options) {}
+  constructor(private db: Database, private options: Options) { this.schedules = new Schedules(db, this); }
 
   get harnesses() { return Object.keys(this.options.turns); }
 
