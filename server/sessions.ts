@@ -89,6 +89,11 @@ export class Sessions {
     this.options.onChange();
   }
 
+  setHidden(id: unknown, hidden: boolean) {
+    this.get(id).setHidden(hidden);
+    this.options.onChange();
+  }
+
   delete(id: unknown) {
     const session = this.get(id);
     session.delete();

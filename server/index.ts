@@ -85,7 +85,7 @@ const commands: Record<string, (cmd: any, send: (message: object) => void) => un
   stop: cmd => { stopSpeech(); sessions.stop(cmd.id); },
   interrupt: cmd => { stopSpeech(); return { accepted: sessions.get(cmd.id).interrupt(cmd.requestId) }; },
   rename: cmd => { sessions.get(cmd.id).setName(cmd.name); publishSessions(); },
-  visibility: cmd => { sessions.get(cmd.id).setHidden(cmd.hidden); publishSessions(); },
+  visibility: cmd => { sessions.setHidden(cmd.id, cmd.hidden); },
   delete: cmd => { sessions.delete(cmd.id); },
   create: async cmd => ({ id: (await sessions.create({ harness: cmd.harness, model: cmd.model, reasoning: cmd.reasoning ?? null, folder: cmd.folder })).id }),
   settings: cmd => sessions.configure(cmd.id, { harness: cmd.harness, model: cmd.model, reasoning: cmd.reasoning ?? null }),
