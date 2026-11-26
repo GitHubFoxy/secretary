@@ -1,3 +1,4 @@
+import { ExternalMcp } from './external-mcp';
 import { slashCommands } from './commands';
 import { onAbort, readJsonLines, spawnHarness, type Turn } from './harness';
 import type { ThreadStartParams } from './protocol/v2/ThreadStartParams';
@@ -7,7 +8,24 @@ export const codexTurn: Turn = async (options, text, images) => {
   if (options.interrupt.aborted) return false;
   const args = ['codex', 'app-server'];
   if (options.mcpUrl) args.push('-c', `mcp_servers.secretary.url="${options.mcpUrl}"`, '-c', `mcp_servers.secretary.http_headers.Authorization="Bearer ${options.mcpToken}"`);
-  const harness = spawnHarness(args, options.folder, options);
+  const env = { ...process.env };
+  const servers = options.mcpRoot && options.mcpRole ? await new ExternalMcp(options.mcpRoot).resolve(options.mcpRole) : [];
+  for (const server of servers) {
+    const prefix = `mcp_servers.${JSON.stringify(server.name)}`;
+    const values = server.type === 'stdio' ? server.env : server.headers;
+    const mapped = Object.fromEntries(Object.entries(values).map(([name, value]) => {
+      const key = `SECRETARY_MCP_${crypto.randomUUID().replaceAll('-', '')}`;
+      env[key] = value;
+      return [name, key];
+    }));
+    if (server.type === 'stdio') {
+      args.push('-c', `${prefix}.command=${JSON.stringify(process.execPath)}`, '-c', `${prefix}.args=${JSON.stringify([`${import.meta.dir}/mcp-exec.ts`, server.command, JSON.stringify(server.args), JSON.stringify(mapped)])}`, '-c', `${prefix}.env_vars=${JSON.stringify(Object.values(mapped))}`);
+    } else {
+      args.push('-c', `${prefix}.url=${JSON.stringify(server.url)}`);
+      for (const [name, key] of Object.entries(mapped)) args.push('-c', `${prefix}.env_http_headers.${JSON.stringify(name)}=${JSON.stringify(key)}`);
+    }
+  }
+  const harness = spawnHarness(args, options.folder, options, env);
   let id = 0, dispatched = false;
   // `accepted` runs as soon as the response is read, before the notifications that follow it in the same chunk.
   const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; accepted?: () => void }>();

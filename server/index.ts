@@ -14,6 +14,7 @@ import { serveMcp } from './mcp';
 import { Memory } from './memory';
 import { Sudo } from './sudo';
 import { Secrets } from './secrets';
+import { ExternalMcp } from './external-mcp';
 import { getDraft, saveDraft } from './drafts';
 import { listNotes, saveNote, deleteNote } from './notes';
 import { checkReasoning, modelDetails } from './models';
@@ -25,6 +26,7 @@ import { turnComplete } from './smart-turn';
 
 const camera = cameraRequests(secretaryFolder);
 const memory = new Memory(secretaryFolder);
+const externalMcp = new ExternalMcp(secretaryFolder);
 const videoIntervalFile = `${secretaryFolder}/video-interval`;
 ensurePersona(secretaryFolder);
 
@@ -68,6 +70,8 @@ function sameOrigin(request: Request, url: URL) {
 
 // The browser adapter. Every command gets exactly one answer with its requestId: `reply` with the result or `error`.
 const commands: Record<string, (cmd: any, send: (message: object) => void) => unknown> = {
+  mcpList: () => ({ servers: externalMcp.list() }),
+  mcpSave: cmd => { externalMcp.save(cmd.servers); },
   cameraState: (cmd, send) => { camera.set(send, cmd.enabled === true); },
   cameraReply: (cmd, send) => camera.reply(send, cmd.id, cmd.image, cmd.error),
   compact: cmd => sessions.get(cmd.id).compact(),

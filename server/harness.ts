@@ -6,7 +6,7 @@ import type { Image } from './images';
 // Resolves true when the turn completed successfully.
 export type TurnOptions = {
   folder: string; model: string; reasoning: string | null; resumeId: string | null; compact?: boolean;
-  secretary?: boolean; mcpUrl?: string; mcpToken?: string; systemPrompt?: string;
+  secretary?: boolean; mcpRoot?: string; mcpRole?: 'secretary' | 'specialist'; mcpUrl?: string; mcpToken?: string; systemPrompt?: string;
   // Aborted when the owner wants the turn to end. Before dispatch the adapter returns without sending;
   // after it, the adapter asks the harness to stop and kills it if it doesn't within the deadline.
   interrupt: AbortSignal;
@@ -28,8 +28,8 @@ export function onAbort(signal: AbortSignal, callback: () => void) {
 
 // On Linux setsid puts the harness in its own process group, so one signal stops it together with the tools it started.
 // If Secretary itself dies, systemd kills whatever is left (secretary.service uses KillMode=control-group).
-export function spawnHarness(args: string[], cwd: string, { interrupt, stop }: Pick<TurnOptions, 'interrupt' | 'stop'>) {
-  const child = Bun.spawn(process.platform === 'linux' ? ['setsid', ...args] : args, { cwd, env: process.env, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
+export function spawnHarness(args: string[], cwd: string, { interrupt, stop }: Pick<TurnOptions, 'interrupt' | 'stop'>, env: NodeJS.ProcessEnv = process.env) {
+  const child = Bun.spawn(process.platform === 'linux' ? ['setsid', ...args] : args, { cwd, env, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
   // The journal keeps the whole stderr; the owner sees its end when the harness dies.
   let stderrTail = '';
   const decoder = new TextDecoder();
