@@ -78,13 +78,14 @@
       <span class="flex min-w-0 items-center gap-2">
         <span class="size-1.5 shrink-0 rounded-full {dotClass[s.status] ?? 'bg-neutral-600'}" aria-hidden="true" title={statusText[s.status] ?? s.status}></span>
         <span class="min-w-0 flex-1 truncate {worker ? 'text-xs' : 'text-sm'} {active ? 'text-neutral-100' : worker ? 'text-neutral-400' : 'text-neutral-200'}">{title}</span>
-        <Icon name={s.harness} class="size-3.5 shrink-0 {harnessInfo(s.harness).accent}" />
       </span>
       {#if active}
-        <span class="mt-0.5 flex min-w-0 items-center gap-1 pl-3.5 text-xs text-neutral-500">{statusText[s.status] ?? s.status} ·{@render agentLine(s)}</span>
+        <span class="mt-0.5 block truncate pl-3.5 text-xs text-neutral-500">{statusText[s.status] ?? s.status} · {modelLabel(s.model)}{#if s.reasoning}{' · '}{s.reasoning}{/if}</span>
         <span class="block truncate pl-3.5 font-mono text-[11px] text-neutral-600">{s.folder}</span>
       {/if}
     </button>
+    <!-- Вне кнопки чата: так иконка стоит по центру строки, на одном уровне с кнопками справа, сколько бы строк ни было. -->
+    <Icon name={s.harness} class="mx-1.5 size-3.5 shrink-0 {harnessInfo(s.harness).accent}" />
     {#if workers.length}
       <button class="flex h-8 min-w-12 shrink-0 cursor-pointer items-center justify-center gap-1 rounded-lg border border-neutral-800 px-2 text-xs text-neutral-400 transition-colors hover:border-neutral-600 hover:text-neutral-100" aria-expanded={unfolded} aria-label={`${unfolded ? 'Свернуть' : 'Показать'} Workers: ${workers.length}`} onclick={() => toggle(s.id)}>
         <Icon name="chevron" class="size-3.5 transition-transform {unfolded ? '' : '-rotate-90'}" />{workers.length}
