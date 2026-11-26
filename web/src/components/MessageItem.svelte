@@ -35,7 +35,7 @@
 <div data-message>
   {#if m.kind === 'steps'}
     <div class="max-w-[85%] text-sm text-neutral-400">
-      <p>Думает…</p>
+      <p>{m.live ? 'Думает…' : 'Рассуждения и шаги'}</p>
       {#if m.thinking}<p class="mt-1 line-clamp-3 whitespace-pre-wrap text-neutral-500">{m.thinking}</p>{/if}
       {#if m.steps.length}
         {@const last = m.steps[m.steps.length - 1]}
