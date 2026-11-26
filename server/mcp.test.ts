@@ -11,7 +11,7 @@ import { Sessions } from './sessions';
 
 type Call = { text: string; options: TurnOptions; start(): void; answer(text: string): void; end(completed: boolean): void };
 
-function setup(root = '/nonexistent') {
+function setup(root = '/nonexistent', previewBase?: string) {
   const calls: Call[] = [];
   const turn: Turn = (options, text) => new Promise(resolve => calls.push({
     text, options,
@@ -30,6 +30,7 @@ function setup(root = '/nonexistent') {
   const server = serveMcp(sessions, {
     port: 0,
     root,
+    previewBase,
     listModels: async harness => {
       if (harness === 'codex') throw new Error('codex not installed');
       return [{ id: 'opus', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }];
@@ -60,7 +61,7 @@ test('Secretary Agent: list отдаёт сессии и модели, send со
   servers.push(env.server);
 
   const tools = await env.rpc(1, 'tools/list');
-  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['schedule_add', 'schedule_list', 'schedule_remove', 'sudo_run', 'recall', 'list', 'send', 'read', 'stop', 'hide', 'send_file', 'report_issue']);
+  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['schedule_add', 'schedule_list', 'schedule_remove', 'sudo_run', 'recall', 'list', 'send', 'read', 'stop', 'hide', 'send_file', 'publish_html', 'report_issue']);
 
   const listed = await env.callTool(1, 'list');
   expect(listed.isError).toBe(false);
@@ -282,4 +283,25 @@ test('расписания доступны Specialist только для се�
   expect(env.sessions.get(worker).info.hidden).toBe(0);
   expect((await env.callTool(1, 'hide', { id: spec, hidden: true })).isError).toBe(false);
   expect(env.sessions.get(spec).info.hidden).toBe(1);
+});
+
+
+test('publish_html доступен Secretary Agent и Specialist и сохраняет сообщение в их чате', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mcp-preview-'));
+  try {
+    await writeFile(join(root, 'page.html'), '<h1>hello</h1>');
+    const env = setup(root, 'https://preview.example.com');
+    servers.push(env.server);
+    const specialist = (await env.callTool(1, 'send', { name: 'Проект', folder: root, message: 'старт' })).data.id;
+    for (const id of [1, specialist]) {
+      const result = await env.callTool(id, 'publish_html', { path: join(root, 'page.html') });
+      expect(result.isError).toBe(false);
+      expect(result.data.url).toStartWith('https://preview.example.com/');
+      expect(env.sessions.chatHistory(id, 10).some((message: any) => message.preview?.url === result.data.url)).toBe(true);
+    }
+    expect((await env.callTool(1, 'publish_html', { path: join(root, 'missing.html') })).isError).toBe(true);
+    const disabled = setup(root, '');
+    servers.push(disabled.server);
+    expect((await disabled.callTool(1, 'publish_html', { path: join(root, 'page.html') })).data).toContain('Публикация не настроена');
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

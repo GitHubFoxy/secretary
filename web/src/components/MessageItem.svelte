@@ -183,6 +183,12 @@
   {:else}
     <div class="flex justify-start">
       <div class="max-w-[85%] min-w-0 px-1">
+        {#if m.preview}
+          <div class="mb-3 flex flex-col items-start gap-2 rounded-lg bg-neutral-800 p-3 text-sm text-neutral-100">
+            <span>Страница доступна каждому, у кого есть ссылка, до {new Date(m.preview.expires_at).toLocaleString('ru-RU')}.</span>
+            <a class="rounded-lg bg-neutral-700 px-3 py-2 hover:bg-neutral-600" href={m.preview.url} target="_blank" rel="noopener noreferrer">Открыть</a>
+          </div>
+        {/if}
         {#each m.files || [] as file}
           {@const src = fileUrl(file)}
           <div class="mb-3 flex flex-col items-start gap-2">

@@ -1,3 +1,4 @@
+import { servePreview } from './preview';
 import { authorized, pair } from './auth';
 import { slashCommands } from './commands';
 import { findFiles } from './references';
@@ -133,6 +134,7 @@ const server = Bun.serve({
 // Loading and resuming sessions can publish events.
 sessions.load(secretaryFolder);
 serveMcp(sessions, { sudo });
+servePreview();
 sessions.resumePending();
 sessions.schedules.tick();
 setInterval(() => sessions.schedules.tick(), 30_000);

@@ -5,7 +5,7 @@ import type { FileAttachment } from './files';
 // SQLite keeps raw harness events for agents (MCP read). The browser only gets the chat messages built here.
 export type ChatMessage =
   | { kind: 'user' | 'cancelled' | 'uncertain'; text: string; images: Image[]; files?: FileAttachment[] }
-  | { kind: 'agent'; text: string; files?: FileAttachment[] }
+  | { kind: 'agent'; text: string; files?: FileAttachment[]; preview?: { url: string; expires_at: string } }
   | { kind: 'sudo'; id: string; command?: string; reason?: string; status?: string }
   | { kind: 'error'; text: string }
   | { kind: 'step'; tool: string; summary: string }
@@ -78,6 +78,7 @@ export function chatMessage(event: any, time = ''): ChatMessage | null {
     return { kind: 'error', text };
   }
   if (event?.type === 'model_switch') return { kind: 'switch', from: event.from, to: event.to };
+  if (event?.type === 'agent_preview') return { kind: 'agent', text: '', preview: { url: event.url, expires_at: event.expires_at } };
   if (event?.type === 'agent_files') return { kind: 'agent', text: event.text, files: event.files };
   const answer = agentAnswer(event);
   if (answer !== null) return answer && !answer.startsWith('NO_REPLY') ? { kind: 'agent', text: answer } : null;
