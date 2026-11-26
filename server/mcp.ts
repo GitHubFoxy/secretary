@@ -76,6 +76,7 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
         { id: { type: 'number', description: `id ${target}` } },
         ['id'],
       ],
+      ['hide', `Скрыть или вернуть ${target} в боковой панели.`, { id: { type: 'number' }, hidden: { type: 'boolean' } }, ['id', 'hidden']],
       [
         'send_file',
         'Показать владельцу файл с Host в твоём чате: картинку, видео, аудио или документ. Владелец сможет открыть его и скачать на устройство.',
@@ -188,6 +189,12 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
       case 'stop': {
         const target = resolveTarget(callerId, isSecretary, args.id);
         sessions.stop(target.id);
+        return { ok: true };
+      }
+      case 'hide': {
+        const target = sessions.get(args.id);
+        if (target.info.parent_id !== callerId) throw new Error('Нет доступа к чужой сессии');
+        sessions.setHidden(target.id, args.hidden);
         return { ok: true };
       }
       case 'send_file': {

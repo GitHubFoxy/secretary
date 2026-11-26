@@ -60,7 +60,7 @@ test('Secretary Agent: list отдаёт сессии и модели, send со
   servers.push(env.server);
 
   const tools = await env.rpc(1, 'tools/list');
-  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['schedule_add', 'schedule_list', 'schedule_remove', 'sudo_run', 'recall', 'list', 'send', 'read', 'stop', 'send_file', 'report_issue']);
+  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['schedule_add', 'schedule_list', 'schedule_remove', 'sudo_run', 'recall', 'list', 'send', 'read', 'stop', 'hide', 'send_file', 'report_issue']);
 
   const listed = await env.callTool(1, 'list');
   expect(listed.isError).toBe(false);
@@ -267,4 +267,19 @@ test('расписания доступны Specialist только для се�
   expect((await env.callTool(first, 'schedule_add', { message: 'worker', session_id: worker, cron: '* * * * *' })).isError).toBe(true);
   expect((await env.callTool(first, 'schedule_list')).data).toHaveLength(2);
   expect((await env.rpc(worker, 'tools/list')).status).toBe(401);
+});
+
+ test('hide управляет только непосредственными детьми', async () => {
+  const env = setup();
+  servers.push(env.server);
+  const spec = (await env.callTool(1, 'send', { name: 'S', folder: '/tmp/s', message: 'go' })).data.id;
+  const worker = (await env.callTool(spec, 'send', { name: 'W', message: 'go' })).data.id;
+  expect((await env.callTool(1, 'hide', { id: worker, hidden: true })).isError).toBe(true);
+  expect((await env.callTool(spec, 'hide', { id: spec, hidden: true })).isError).toBe(true);
+  expect((await env.callTool(spec, 'hide', { id: worker, hidden: true })).isError).toBe(false);
+  expect(env.sessions.get(worker).info.hidden).toBe(1);
+  expect((await env.callTool(spec, 'hide', { id: worker, hidden: false })).isError).toBe(false);
+  expect(env.sessions.get(worker).info.hidden).toBe(0);
+  expect((await env.callTool(1, 'hide', { id: spec, hidden: true })).isError).toBe(false);
+  expect(env.sessions.get(spec).info.hidden).toBe(1);
 });
