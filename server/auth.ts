@@ -9,7 +9,7 @@ const db = new Database(`${folder}/auth.sqlite`, { create: true });
 chmodSync(`${folder}/auth.sqlite`, 0o600);
 db.run('CREATE TABLE IF NOT EXISTS pairing (code TEXT NOT NULL, expires INTEGER NOT NULL)');
 db.run('CREATE TABLE IF NOT EXISTS devices (token TEXT PRIMARY KEY)');
-db.run('CREATE TABLE IF NOT EXISTS pairing_attempts (count INTEGER NOT NULL)');
+db.run('CREATE TABLE IF NOT EXISTS pairing_rate (client TEXT PRIMARY KEY, count INTEGER NOT NULL, expires INTEGER NOT NULL)');
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 
 export function createCode() {
@@ -17,18 +17,18 @@ export function createCode() {
   const code = Array.from({length: 8}, () => alphabet[randomInt(alphabet.length)]).join('');
   db.transaction(() => {
     db.run('DELETE FROM pairing');
-    db.run('DELETE FROM pairing_attempts');
-    db.run('INSERT INTO pairing_attempts VALUES (0)');
     db.run('INSERT INTO pairing VALUES (?, ?)', [hash(code), Date.now() + 10 * 60_000]);
   })();
   return `${code.slice(0, 4)}-${code.slice(4)}`;
 }
-export function pair(input: string) {
+export function pair(input: string, client: string) {
   const code = input.toUpperCase().replaceAll('-', '').trim();
   return db.transaction(() => {
-    const attempts = db.query('SELECT count FROM pairing_attempts').get() as {count:number} | null;
-    if (!attempts || attempts.count >= 10) return null;
-    db.run('UPDATE pairing_attempts SET count = count + 1');
+    const now = Date.now();
+    db.run('DELETE FROM pairing_rate WHERE expires <= ?', [now]);
+    const attempts = db.query('SELECT count FROM pairing_rate WHERE client = ?').get(client) as {count:number} | null;
+    if (attempts && attempts.count >= 10) return null;
+    db.run('INSERT INTO pairing_rate VALUES (?, 1, ?) ON CONFLICT(client) DO UPDATE SET count = count + 1', [client, now + 60_000]);
     if (!/^[A-Z2-9]{8}$/.test(code)) return null;
     const result = db.query('DELETE FROM pairing WHERE code = ? AND expires > ?').run(hash(code), Date.now());
     if (!result.changes) return null;

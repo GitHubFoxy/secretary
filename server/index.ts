@@ -98,7 +98,7 @@ const server = Bun.serve({
     if (url.pathname === '/pair' && request.method === 'POST') {
       if (!sameOrigin(request, url)) return new Response('Forbidden', { status: 403 });
       return request.formData().then(form => {
-        const token = pair(String(form.get('code') || ''));
+        const token = pair(String(form.get('code') || ''), server.requestIP(request)?.address ?? 'unknown');
         if (!token) return new Response('Неверный или просроченный код.', { status: 401 });
         return new Response(null, { status: 303, headers: { 'Location': '/', 'Set-Cookie': `secretary=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=31536000`, 'Cache-Control': 'no-store' } });
       }).catch(() => new Response('Invalid request', { status: 400 }));
