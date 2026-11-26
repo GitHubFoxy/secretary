@@ -463,7 +463,7 @@
           {#if speaking && current?.secretary}
             <SpeakingPill onstop={stopSpeech} />
           {/if}
-          <Composer bind:this={composer} {videoInterval} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} oninput={scheduleDraft} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
+          <Composer sessionHarness={current?.harness} sessionFolder={current?.folder} loadCommands={id => connection.request({type:'slashCommands', id}).then(result => result.commands)} bind:this={composer} {videoInterval} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} oninput={scheduleDraft} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
         </div>
       </div>
     </div>

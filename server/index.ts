@@ -1,4 +1,5 @@
 import { authorized, pair } from './auth';
+import { slashCommands } from './commands';
 import { chatPage, chatMessage } from './chat';
 import { claudeTurn } from './claude';
 import { codexRateLimits, codexTurn } from './codex';
@@ -55,6 +56,7 @@ function sameOrigin(request: Request, url: URL) {
 
 // The browser adapter. Every command gets exactly one answer with its requestId: `reply` with the result or `error`.
 const commands: Record<string, (cmd: any, send: (message: object) => void) => unknown> = {
+  slashCommands: async cmd => { const {harness, folder} = sessions.get(cmd.id).info; return {commands: await slashCommands(harness, folder)}; },
   sudoApprove: cmd => sudo.approve(cmd.sudoId, cmd.password),
   sudoReject: cmd => sudo.reject(cmd.sudoId),
   draft: cmd => ({text: getDraft(db, sessions.get(cmd.id).id)}),
