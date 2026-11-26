@@ -53,6 +53,7 @@ if [ -z "$choice" ]; then
   case "$choice" in 1|2|3) ;; *) echo 'Неизвестный выбор.' >&2; exit 1;; esac
 fi
 step 'Системные пакеты и Tailscale'
+echo 'Обычно занимает 2–3 минуты.'
 sudo -v
 if [ "$ID" = arch ]; then
   sudo pacman -S --needed --noconfirm curl git tar gzip unzip nodejs npm tailscale
@@ -110,12 +111,30 @@ sudo loginctl enable-linger "$(id -un)"
 systemctl --user daemon-reload
 systemctl --user enable --now secretary.service
 step 'Подключение к Tailscale'
+# tailscale up prints only its English login link and then nothing, so the script says what to do and confirms.
+if ! tailscale status >/dev/null 2>&1; then
+  echo 'Откройте ссылку ниже в браузере и войдите в Tailscale. Установка продолжится сама.'
+fi
 sudo tailscale up
-sudo tailscale serve --bg 3000
+sudo tailscale serve --bg 3000 >/dev/null
 address=$(tailscale status --json | "$HOME/.secretary/bun/bin/bun" -e 'let s=""; for await (const c of Bun.stdin.stream()) s+=new TextDecoder().decode(c); console.log(JSON.parse(s).Self.DNSName.replace(/\.$/, ""))')
+echo '✓ Tailscale подключён'
+
 step 'Подключение телефона'
-echo "Host: https://$address"
-"$HOME/.local/bin/secretary" pair
+code=$("$HOME/.local/bin/secretary" pair | grep -o '[A-Z0-9]\{4\}-[A-Z0-9]\{4\}')
 finish
 printf '%s\tготово\t%ss всего\n' "$(date -Is)" "$SECONDS" >> "$log"
 printf '\nДля полного доступа Secretary можно отключить пароль sudo строкой в /etc/sudoers.d/secretary:\n%s ALL=(ALL) NOPASSWD: ALL\nДоступ к Secretary тогда означает root на Host.\n' "$(id -un)"
+cat <<DONE
+
+════════════════════════════════════════════════════════
+  ✓ Secretary установлен за $((SECONDS / 60)) мин $((SECONDS % 60)) с
+
+  Адрес Host:  https://$address
+  Код:         $code   (действует 10 минут; новый — secretary pair)
+
+  На телефоне:
+  1. Установите Tailscale и войдите тем же аккаунтом.
+  2. Откройте Secretary и введите адрес Host и код.
+════════════════════════════════════════════════════════
+DONE
