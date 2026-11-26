@@ -39,8 +39,6 @@ const sessions = new Sessions(db, {
     else if (event.type === 'queue' || event.type === 'interrupt_result') publish({ ...event, sessionId: session.id });
   },
 });
-sessions.load(secretaryFolder);
-serveMcp(sessions);
 
 // Browsers send Origin; a foreign one is rejected. Requests without Origin (curl) pass.
 function sameOrigin(request: Request, url: URL) {
@@ -153,7 +151,9 @@ const server = Bun.serve({
   },
 });
 
-// After the server exists: resumed turns publish through it.
+// Loading and resuming sessions can publish events.
+sessions.load(secretaryFolder);
+serveMcp(sessions);
 sessions.resumePending();
 
 console.log(`Secretary: ${server.url}`);
