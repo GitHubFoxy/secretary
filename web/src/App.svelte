@@ -6,6 +6,7 @@
   import { createUpdateChecker } from './updates.js';
   import { keyboardInset } from './viewport.js';
   import TopBar from './components/TopBar.svelte';
+  import { activityStatus } from './activity-status.js';
   import Notes from './components/Notes.svelte';
   import SessionDrawer from './components/SessionDrawer.svelte';
   import SettingsPanel from './components/SettingsPanel.svelte';
@@ -262,6 +263,7 @@
   function groupSteps(items, running) {
     const grouped = [];
     for (const item of items) {
+      if (item.kind === 'writing') continue;
       if (item.kind !== 'step' && item.kind !== 'thinking') { grouped.push(item); continue; }
       let group = grouped[grouped.length - 1];
       if (group?.kind !== 'steps') {
@@ -340,7 +342,7 @@
   <div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
     <TopBar
       {title}
-      status={current?.status}
+      status={activityStatus(current?.status, history)}
       {connected}
       onmenu={() => (drawerOpen = true)}
       oncall={openVoiceMode}

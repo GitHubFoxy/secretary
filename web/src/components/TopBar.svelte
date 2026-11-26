@@ -14,7 +14,7 @@
         <span aria-hidden="true" class="size-1.5 rounded-full {connected ? 'bg-green-500' : 'bg-neutral-500'}"></span>
         {#if !connected}Нет связи{/if}
       </span>
-      {#if status}<span>{status}</span>{/if}
+      {#if status}<span class="min-w-0 truncate">{status}</span>{/if}
     </p>
   </div>
   <button class="icon-btn relative" aria-label="Заметки: {notesCount}" onclick={onnotes}><Icon name="notes" /><span class="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-neutral-100 px-1 text-[10px] font-semibold leading-none text-neutral-950">{notesCount}</span></button>

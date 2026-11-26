@@ -9,6 +9,7 @@ export type ChatMessage =
   | { kind: 'error'; text: string }
   | { kind: 'step'; tool: string; summary: string }
   | { kind: 'thinking'; text: string }
+  | { kind: 'writing' }
   | { kind: 'report'; text: string; report: { id: number; harness: string; folder: string } }
   | { kind: 'switch'; from: AgentSettings; to: AgentSettings };
 
@@ -30,7 +31,8 @@ export function agentAnswer(event: any): string | null {
 
 export function chatMessage(event: any): ChatMessage | null {
   if (event?.type === 'assistant' && Array.isArray(event.message?.content)) {
-    const block = event.message.content.find((b: any) => b.type === 'tool_use' || b.type === 'thinking');
+    const block = event.message.content.find((b: any) => b.type === 'tool_use' || b.type === 'thinking' || b.type === 'text');
+    if (block?.type === 'text') return { kind: 'writing' };
     if (block?.type === 'thinking' && typeof block.thinking === 'string') return { kind: 'thinking', text: block.thinking.slice(0, 2000) };
     if (block?.type === 'tool_use') {
       const input = block.input || {};
@@ -42,6 +44,7 @@ export function chatMessage(event: any): ChatMessage | null {
     }
   }
   const item = event?.params?.item;
+  if (event?.method === 'item/started' && item?.type === 'agentMessage') return { kind: 'writing' };
   if (event?.method === 'item/started') {
     const tool = item?.type === 'commandExecution' ? 'Bash' : item?.type === 'fileChange' ? 'Edit' : item?.type === 'mcpToolCall' ? item.tool : null;
     const summary = item?.type === 'commandExecution' ? item.command : item?.type === 'fileChange' ? item.changes?.[0]?.path : '';
