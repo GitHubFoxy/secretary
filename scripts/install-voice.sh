@@ -32,4 +32,16 @@ modeldir="$tmp/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
 cp "$modeldir/tokens.txt" "$HOME/.secretary/asr/parakeet/"
 for part in encoder decoder joiner; do cp "$modeldir/$part.int8.onnx" "$HOME/.secretary/asr/parakeet/$part.onnx"; done
 cp "$tmp/gigaam/"* "$HOME/.secretary/asr/gigaam/"
-echo 'Распознавание речи установлено.'
+smart_model=smart-turn-v3.2-cpu.onnx
+smart_sha=2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f
+smart_revision=f766f81d3cfdf7737ac64aad813d91bbfd56bf93
+smart_folder="$HOME/.secretary/asr"
+if ! printf '%s  %s\n' "$smart_sha" "$smart_folder/$smart_model" | sha256sum -c --status 2>/dev/null; then
+  curl --progress-bar -fL "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/$smart_revision/$smart_model" -o "$tmp/$smart_model"
+  printf '%s  %s\n' "$smart_sha" "$tmp/$smart_model" | sha256sum -c
+  cp "$tmp/$smart_model" "$smart_folder/$smart_model"
+fi
+python3 -m venv "$smart_folder/smart-turn-venv"
+"$smart_folder/smart-turn-venv/bin/python" -m pip install numpy onnxruntime
+"$smart_folder/smart-turn-venv/bin/python" -c 'import numpy, onnxruntime'
+echo 'Распознавание речи и Smart Turn установлены.'

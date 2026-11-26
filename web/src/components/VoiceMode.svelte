@@ -3,6 +3,7 @@
   import Icon from './Icon.svelte';
   import { wavFromRecording } from '../voice.js';
   import { VAD, voiceActivity, initialVoiceActivity } from '../voice-vad.js';
+  import { isTurnComplete } from '../voice-turn.js';
   // Голосовой режим: открывается и сразу слушает, отправляет, когда человек замолчал.
   // variant 'sheet' — шторка поверх другого приложения, 'full' — весь экран внутри Secretary App.
   // turn — сообщения текущего хода: последнее сообщение пользователя и всё после него.
@@ -29,7 +30,11 @@
     if (!starting) { media.getTracks().forEach(track => track.stop()); return; }
     const chunks = [], started = Date.now(), recorder = new MediaRecorder(media), active = {recorder, media, send:false, timing};
     recording = active;
-    recorder.ondataavailable = event => chunks.push(event.data);
+    recorder.ondataavailable = event => {
+      chunks.push(event.data);
+      active.snapshot?.();
+      active.snapshot = null;
+    };
     recorder.onstop = () => {
       media.getTracks().forEach(track => track.stop());
       const seconds = (Date.now() - started) / 1000;
@@ -43,6 +48,25 @@
     const samples = new Float32Array(analyser.fftSize);
     audio.createMediaStreamSource(media).connect(analyser);
     let level = 0, vad = initialVoiceActivity();
+    async function checkTurn() {
+      active.checking = true;
+      const lastLoud = active.lastLoud;
+      try {
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => { active.snapshot = null; reject(new Error('Нет данных записи')); }, 1000);
+          active.snapshot = () => { clearTimeout(timeout); resolve(); };
+          recorder.requestData();
+        });
+        const wav = await wavFromRecording(chunks.slice(), {trim:false, lastSeconds:8});
+        if (recording !== active || active.lastLoud !== lastLoud) return;
+        const complete = await isTurnComplete(wav);
+        if (recording !== active || active.lastLoud !== lastLoud) return;
+        if (complete !== false) finish(true, true);
+        else active.incomplete = true;
+      } catch {
+        if (recording === active && active.lastLoud === lastLoud) finish(true, true);
+      } finally { active.checking = false; }
+    }
     active.timer = setInterval(() => {
       if (recording !== active) return;
       analyser.getFloatTimeDomainData(samples);
@@ -52,8 +76,12 @@
       vad = voiceActivity(vad, rms, speaking && !active.interrupted);
       if (rms > Math.max(VAD.floor, vad.noise * VAD.noiseFactor)) active.lastLoud = performance.now();
       if (vad.interrupt) { active.interrupted = true; onstopspeech?.(); }
-      if (vad.end) finish(true, true);
-      else if (Date.now() - started > 60000) finish(vad.speech >= VAD.speech, true);
+      if (vad.end && !active.checking) {
+        if (active.incomplete && vad.silence >= 2000) finish(true, true);
+        else if (!active.incomplete) checkTurn();
+      }
+      if (vad.silence === 0) active.incomplete = false;
+      if (recording === active && Date.now() - started > 60000) finish(vad.speech >= VAD.speech, true);
     }, VAD.window);
   }
 

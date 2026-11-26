@@ -18,6 +18,7 @@ import { ensurePersona, instructionsFile, setSpecialistModel, specialistModel, s
 import { Sessions } from './sessions';
 import { Speech, warmSpeech, ttsEngine, setTtsEngine } from './speech';
 import { transcribe, voiceModel, setVoiceModel } from './voice';
+import { turnComplete } from './smart-turn';
 
 const memory = new Memory(secretaryFolder);
 const videoIntervalFile = `${secretaryFolder}/video-interval`;
@@ -161,6 +162,11 @@ function handleRequest(request: Request, server: any) {
     const stored = url.pathname.match(/^\/files\/([^/]+)\/([^/]+)$/);
     if (stored && request.method === 'GET')
       return fileResponse(stored[1], stored[2], url.searchParams.has('download')).then(response => response ?? new Response('Not found', {status:404}));
+    if (url.pathname === '/voice/turn' && request.method === 'POST') {
+      const size = Number(request.headers.get('content-length'));
+      if (!size || size > 20 * 1024 * 1024) return new Response('Запись слишком большая', {status:413});
+      return request.arrayBuffer().then(bytes => turnComplete(new Uint8Array(bytes))).then(complete => Response.json({complete}));
+    }
     if (url.pathname === '/voice' && request.method === 'POST') {
       const size = Number(request.headers.get('content-length'));
       if (!size || size > 20 * 1024 * 1024) return new Response('Запись слишком большая', {status: 413});
