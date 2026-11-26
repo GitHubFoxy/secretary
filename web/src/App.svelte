@@ -271,18 +271,20 @@
         grouped.push(group);
       }
       if (item.kind === 'step') group.steps.push(item);
-      else group.thinking = item.text;
+      else if (item.kind === 'thinking') group.thinking = item.text;
     }
     // Only the last group of a running turn is live; finished turns show what the agent did, not «thinks».
     const last = grouped.at(-1);
-    if (last?.kind === 'steps' && running) grouped[grouped.length - 1] = {...last, live:true};
+    if (last?.kind === 'steps' && running) grouped[grouped.length - 1] = {...last, live:true, activity:activityStatus('running', history)};
     return grouped;
   }
   // Queued messages are not accepted by the agent yet, so they come after history.
+  $: groupedHistory = groupSteps(insertVoices(mergeSwitches(history).map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})), voiceMessages.filter(item => item.id === selected)), current?.status === 'running');
   $: messages = [
-    ...groupSteps(insertVoices(mergeSwitches(history).map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})), voiceMessages.filter(item => item.id === selected)), current?.status === 'running'),
+    ...groupedHistory,
     ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:[...item.images, ...(item.files || [])], urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
     ...preparing.filter(item => item.sessionId === selected).map(item => ({...item, kind:'preparing', key:`preparing:${item.id}`})),
+    ...(current?.status === 'running' && !groupedHistory.at(-1)?.live ? [{kind:'activity', text:activityStatus('running', history), key:`${selected}:activity`}] : []),
   ];
   const userKinds = ['user', 'voice', 'queued', 'preparing', 'cancelled', 'uncertain'];
   $: turn = messages.slice(Math.max(0, messages.findLastIndex(m => userKinds.includes(m.kind))));
@@ -342,7 +344,7 @@
   <div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
     <TopBar
       {title}
-      status={activityStatus(current?.status, history)}
+      status={current?.status}
       {connected}
       onmenu={() => (drawerOpen = true)}
       oncall={openVoiceMode}
