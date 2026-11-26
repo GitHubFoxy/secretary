@@ -33,9 +33,11 @@
 {/snippet}
 
 <div data-message>
-  {#if m.kind === 'steps'}
+  {#if m.kind === 'activity'}
+    <p class="truncate text-sm text-neutral-400">{m.text}</p>
+  {:else if m.kind === 'steps'}
     <div class="max-w-[85%] text-sm text-neutral-400">
-      <p>{m.live ? 'Думает…' : 'Рассуждения и шаги'}</p>
+      <p class="truncate">{m.live ? m.activity : 'Рассуждения и шаги'}</p>
       {#if m.thinking}<p class="mt-1 line-clamp-3 whitespace-pre-wrap text-neutral-500">{m.thinking}</p>{/if}
       {#if m.steps.length}
         {@const last = m.steps[m.steps.length - 1]}

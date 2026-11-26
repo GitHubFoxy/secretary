@@ -58,3 +58,8 @@ test('Codex: команда становится шагом', () => {
 test('Codex: рассуждение становится сообщением thinking', () => {
   expect(chatMessage({method:'item/completed', params:{item:{type:'reasoning', summary:['Первое', 'Второе']}}})).toEqual({kind:'thinking', text:'Первое\nВторое'});
 });
+
+test('начало ответа передаётся без текста', () => {
+  expect(chatMessage({type:'assistant', message:{content:[{type:'text', text:'секрет'}]}})).toEqual({kind:'writing'});
+  expect(chatMessage({method:'item/started', params:{item:{type:'agentMessage'}}})).toEqual({kind:'writing'});
+});
