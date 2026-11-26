@@ -60,7 +60,7 @@ test('Secretary Agent: list отдаёт сессии и модели, send со
   servers.push(env.server);
 
   const tools = await env.rpc(1, 'tools/list');
-  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['list', 'send', 'read', 'stop', 'send_file', 'report_issue']);
+  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['list', 'send', 'read', 'stop', 'send_file', 'day_summary', 'report_issue']);
 
   const listed = await env.callTool(1, 'list');
   expect(listed.isError).toBe(false);
@@ -205,4 +205,19 @@ test('MCP проверяет токен Session, Host и Origin', async () => {
   expect((await request(`Bearer ${tokens.get(1)}`)).status).toBe(200);
   expect((await request(`Bearer ${tokens.get(1)}`, { host: 'evil.example' })).status).toBe(403);
   expect((await request(`Bearer ${tokens.get(1)}`, { origin: 'http://127.0.0.1' })).status).toBe(403);
+});
+
+
+test('day_summary показывает события дня только Secretary Agent', async () => {
+  const env = setup(); servers.push(env.server);
+  const created = await env.callTool(1, 'send', { name: 'Проект', folder: '/tmp', message: 'сделай' });
+  env.calls[0].start(); env.calls[0].answer('готово');
+  const summary = await env.callTool(1, 'day_summary');
+  const session = summary.data.sessions.find((s: any) => s.id === created.data.id);
+  expect(session.name).toBe('Проект');
+  expect(session.turns).toBe(1);
+  expect(session.events.map((e: any) => e.kind)).toEqual(['user', 'agent']);
+  expect((await env.callTool(1, 'day_summary', { date: '2024-02-30' })).isError).toBe(true);
+  expect((await env.callTool(created.data.id, 'day_summary')).isError).toBe(true);
+  expect((await env.callTool(1, 'day_summary', { date: '2000-01-01' })).data.sessions).toEqual([]);
 });
