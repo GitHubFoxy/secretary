@@ -3,7 +3,6 @@ set -euo pipefail
 
 # An agent or a script passes the choice as an argument; a person answers the question.
 usage='Использование: install.sh [--subscription claude|codex|both]'
-args=("$@")
 choice=''
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -13,12 +12,19 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Secretary and its agents run as an ordinary user; root here is a mistake to explain, not to work around.
 if [ "$(id -u)" -eq 0 ]; then
-  if [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = root ]; then
-    echo 'Запустите установку от обычного пользователя, не от root.' >&2
-    exit 1
-  fi
-  exec sudo -u "$SUDO_USER" -H env XDG_RUNTIME_DIR="/run/user/$(id -u "$SUDO_USER")" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" bash "$0" "${args[@]}"
+  cat >&2 <<'ROOT'
+Secretary ставится от обычного пользователя, не от root.
+Создайте пользователя и войдите под ним:
+
+  adduser owner
+  usermod -aG sudo owner   # на Arch: usermod -aG wheel owner
+  su - owner
+
+Затем запустите установку снова, без sudo.
+ROOT
+  exit 1
 fi
 
 if [ "$(uname -m)" != x86_64 ] || [ "$(uname -s)" != Linux ]; then
