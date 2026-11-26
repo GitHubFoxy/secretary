@@ -63,3 +63,17 @@ test('начало ответа передаётся без текста', () =>
   expect(chatMessage({type:'assistant', message:{content:[{type:'text', text:'секрет'}]}})).toEqual({kind:'writing'});
   expect(chatMessage({method:'item/started', params:{item:{type:'agentMessage'}}})).toEqual({kind:'writing'});
 });
+
+test('завершённое сжатие обоих harness сохраняется в истории', () => {
+  const time = '2026-11-26T12:00:00.000Z';
+  const claude = {type: 'system', subtype: 'compact_boundary', compact_metadata: {trigger: 'manual', pre_tokens: 27445, post_tokens: 1192}};
+  const codex = {method: 'item/completed', params: {item: {type: 'contextCompaction', id: '1', contentTokenCount: null}}};
+  expect(chatMessage(claude, time)).toEqual({kind: 'compaction', time, beforeTokens: 27445, afterTokens: 1192});
+  expect(chatMessage(codex, time)).toEqual({kind: 'compaction', time});
+  expect(chatMessage({...codex, method: 'item/started'}, time)).toBeNull();
+  expect(chatMessage({type: 'system', subtype: 'compact_boundary', compact_metadata: {pre_tokens: -1, post_tokens: Infinity}}, time)).toEqual({kind: 'compaction', time});
+  const db = new Database(':memory:');
+  db.run('CREATE TABLE events (session_id INTEGER, json TEXT, time TEXT)');
+  for (const event of [claude, codex]) db.query('INSERT INTO events VALUES (1, ?, ?)').run(JSON.stringify(event), time);
+  expect(chatPage(db, 1).messages.map(({cursor, ...message}) => message)).toEqual([chatMessage(claude, time), chatMessage(codex, time)]);
+});

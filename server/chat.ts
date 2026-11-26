@@ -11,6 +11,7 @@ export type ChatMessage =
   | { kind: 'thinking'; text: string }
   | { kind: 'writing' }
   | { kind: 'report'; text: string; report: { id: number; harness: string; folder: string } }
+  | { kind: 'compaction'; time: string; beforeTokens?: number; afterTokens?: number }
   | { kind: 'switch'; from: AgentSettings; to: AgentSettings };
 
 export type AgentSettings = { harness: string; model: string; reasoning: string | null };
@@ -29,7 +30,15 @@ export function agentAnswer(event: any): string | null {
   return item?.type === 'agentMessage' && typeof item.text === 'string' ? item.text : null;
 }
 
-export function chatMessage(event: any): ChatMessage | null {
+export function chatMessage(event: any, time = ''): ChatMessage | null {
+  if ((event?.type === 'system' && event.subtype === 'compact_boundary') ||
+      (event?.method === 'item/completed' && event.params?.item?.type === 'contextCompaction')) {
+    const metadata = event.compact_metadata;
+    const valid = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+    return { kind: 'compaction', time,
+      ...(valid(metadata?.pre_tokens) ? { beforeTokens: metadata.pre_tokens } : {}),
+      ...(valid(metadata?.post_tokens) ? { afterTokens: metadata.post_tokens } : {}) };
+  }
   if (event?.type === 'assistant' && Array.isArray(event.message?.content)) {
     const block = event.message.content.find((b: any) => b.type === 'tool_use' || b.type === 'thinking' || b.type === 'text');
     if (block?.type === 'text') return { kind: 'writing' };
@@ -85,13 +94,13 @@ export function chatMessage(event: any): ChatMessage | null {
 
 // Chat messages from newest to oldest, scanning raw events backwards.
 function* messagesBefore(db: Database, sessionId: number, before = Number.MAX_SAFE_INTEGER) {
-  const query = db.query('SELECT rowid, json FROM events WHERE session_id = ? AND rowid < ? ORDER BY rowid DESC LIMIT 200');
+  const query = db.query('SELECT rowid, json, time FROM events WHERE session_id = ? AND rowid < ? ORDER BY rowid DESC LIMIT 200');
   let cursor = before;
   while (true) {
-    const rows = query.all(sessionId, cursor) as { rowid: number; json: string }[];
+    const rows = query.all(sessionId, cursor) as { rowid: number; json: string; time: string }[];
     for (const row of rows) {
       cursor = row.rowid;
-      const message = chatMessage(JSON.parse(row.json));
+      const message = chatMessage(JSON.parse(row.json), row.time);
       if (message) yield {...message, cursor};
     }
     if (rows.length < 200) return;

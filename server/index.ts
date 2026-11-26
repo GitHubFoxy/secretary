@@ -37,7 +37,8 @@ const sessions = new Sessions(db, {
     if (event.type === 'speech_start') { stopSpeech(); speechTarget = event.speechTarget; speechOwner = event.speechTarget.owner ?? event.speechTarget; speechEventSeen = false; speech.start(); speechTarget?.({type:'speech_start'}); return; }
     if (event.type === 'speech_event') { if (!speechEventSeen) { speechEventSeen = true; speechTarget?.({type:'speech_event'}); } speech.event(event.event); return; }
     if (event.type === 'speech_end') { speech.end(event.interrupted); return; }
-    const message = chatMessage(event);
+    const time = cursor === undefined ? '' : (db.query('SELECT time FROM events WHERE rowid = ?').get(cursor) as {time: string}).time;
+    const message = chatMessage(event, time);
     if (message) publish({ type: 'message', sessionId: session.id, message: {...message, cursor} });
     else if (event.type === 'queue' || event.type === 'interrupt_result') publish({ ...event, sessionId: session.id });
   },

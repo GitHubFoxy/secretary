@@ -63,6 +63,12 @@
         {#if stepsOpen}<ul class="mt-1 space-y-1 pl-4">{#each m.steps as step}<li class="break-words">{step.tool}{step.summary ? `: ${step.summary}` : ''}</li>{/each}</ul>{/if}
       {/if}
     </div>
+  {:else if m.kind === 'compaction'}
+    <div class="flex items-center gap-2 text-xs text-neutral-400" role="note" aria-label="Контекст сжат">
+      <div class="h-px flex-1 bg-neutral-800"></div>
+      <span class="text-center">Контекст сжат{#if m.beforeTokens != null && m.afterTokens != null} · {new Intl.NumberFormat('ru', { notation: 'compact', maximumFractionDigits: 1 }).format(m.beforeTokens)} → {new Intl.NumberFormat('ru', { notation: 'compact', maximumFractionDigits: 1 }).format(m.afterTokens)} токенов{:else if m.beforeTokens != null} · до сжатия: {new Intl.NumberFormat('ru', { notation: 'compact', maximumFractionDigits: 1 }).format(m.beforeTokens)} токенов{/if} · <time datetime={m.time} title={new Date(m.time).toLocaleString('ru-RU')}>{new Date(m.time).toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'})}</time></span>
+      <div class="h-px flex-1 bg-neutral-800"></div>
+    </div>
   {:else if m.kind === 'switch'}
     <div class="flex items-center gap-2 text-xs text-neutral-400" role="note" aria-label="Модель переключена">
       <div class="h-px flex-1 bg-neutral-800"></div>
