@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 
 const valid = (name: string) => {
@@ -22,7 +22,7 @@ export class Skills {
     const proposal = { id, session, name, content, reason, base: hash(before) };
     mkdirSync(`${this.root}/skill-proposals`, { recursive: true });
     writeFileSync(this.proposal(id), JSON.stringify(proposal), { flag: 'wx' });
-    this.emit(session, { type: 'skill_request', id, name, reason, before: before ?? '', content });
+    if (session) this.emit(session, { type: 'skill_request', id, name, reason, before: before ?? '', content });
     return { id };
   }
   private load(id: string) { return JSON.parse(readFileSync(this.proposal(id), 'utf8')); }
@@ -35,7 +35,7 @@ export class Skills {
     writeFileSync(file, p.content);
     this.sync();
     rmSync(this.proposal(id));
-    this.emit(p.session, { type: 'skill_result', id, status: 'approved' });
+    if (p.session) this.emit(p.session, { type: 'skill_result', id, status: 'approved' });
   }
   reject(id: string) { const p = this.load(id); rmSync(this.proposal(id)); this.emit(p.session, { type: 'skill_result', id, status: 'rejected' }); }
   rollback(session: number, name: string, reason = 'Восстановить предыдущую версию') {
@@ -43,6 +43,27 @@ export class Skills {
     const versions = existsSync(dir) ? readdirSync(dir).filter(n => n.endsWith('.md')).sort() : [];
     if (!versions.length) throw new Error('Нет предыдущей версии');
     return this.propose(session, name, readFileSync(`${dir}/${versions.at(-1)}`, 'utf8'), reason);
+  }
+  versions(name: string) {
+    const dir = `${this.root}/skills/${valid(name)}/versions`;
+    return existsSync(dir) ? readdirSync(dir).filter(n => /^\d+-[a-f0-9-]{36}\.md$/.test(n)).sort().reverse() : [];
+  }
+  details(name: string) {
+    const content = this.read(name);
+    if (content === null) throw new Error('Skill не найден');
+    return { name, content, date: statSync(this.file(name)).mtime.toISOString(), versions: this.versions(name), builtin: existsSync(new URL(`./skills/${name}/SKILL.md`, import.meta.url)) };
+  }
+  restore(name: string, version: string) {
+    if (!this.versions(name).includes(version) || this.read(name) === null) throw new Error('Версия не найдена');
+    const content = readFileSync(`${this.root}/skills/${valid(name)}/versions/${version}`, 'utf8');
+    const proposal = this.propose(0, name, content, 'Восстановить версию');
+    this.approve(proposal.id);
+  }
+  delete(name: string) {
+    if (existsSync(new URL(`./skills/${valid(name)}/SKILL.md`, import.meta.url))) throw new Error('Встроенный skill нельзя удалить');
+    if (this.read(name) === null) throw new Error('Skill не найден');
+    rmSync(`${this.root}/skills/${valid(name)}`, { recursive: true });
+    for (const harness of ['.claude', '.agents']) rmSync(`${this.root}/${harness}/skills/${name}`, { recursive: true, force: true });
   }
   sync() {
     for (const name of this.list()) for (const harness of ['.claude', '.agents']) {
