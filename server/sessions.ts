@@ -23,6 +23,12 @@ type Options = {
 export class Sessions {
   private all = new Map<number, Session>();
   private folder = '';
+  private tokens = new Map<number, string>();
+
+  authorizeMcp(id: number, authorization: string | null) {
+    const token = this.tokens.get(id);
+    return !!token && authorization === `Bearer ${token}`;
+  }
 
   constructor(private db: Database, private options: Options) {}
 
@@ -83,6 +89,7 @@ export class Sessions {
     const session = this.get(id);
     session.delete();
     this.all.delete(session.id);
+    this.tokens.delete(session.id);
     this.options.onChange();
   }
 
@@ -98,9 +105,11 @@ export class Sessions {
 
   private attach(row: SessionRow) {
     const baseMcp = this.options.mcpUrl ?? defaultMcpUrl;
+    const token = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex');
+    if (row.id === SECRETARY_ID || isSpecialist(row)) this.tokens.set(row.id, token);
     const session = new Session(this.db, row, this.options.turns, r => {
-      if (r.id === SECRETARY_ID) return { mcpUrl: `${baseMcp}/${r.id}`, systemPrompt: SECRETARY_PROMPT };
-      if (isSpecialist(r)) return { mcpUrl: `${baseMcp}/${r.id}`, systemPrompt: specialistPrompt(this.folder) };
+      if (r.id === SECRETARY_ID) return { mcpUrl: `${baseMcp}/${r.id}`, mcpToken: token, systemPrompt: SECRETARY_PROMPT };
+      if (isSpecialist(r)) return { mcpUrl: `${baseMcp}/${r.id}`, mcpToken: token, systemPrompt: specialistPrompt(this.folder) };
       return {};
     });
     this.all.set(session.id, session);

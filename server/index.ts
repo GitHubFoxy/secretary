@@ -2,7 +2,7 @@ import { authorized, pair } from './auth';
 import { chatPage, chatMessage } from './chat';
 import { claudeTurn } from './claude';
 import { codexRateLimits, codexTurn } from './codex';
-import { secretaryFolder } from './config';
+import { port, secretaryFolder } from './config';
 import { fileResponse, saveFile } from './files';
 import { migrateDatabase, openDatabase } from './database';
 import { serveMcp } from './mcp';
@@ -70,7 +70,7 @@ const commands: Record<string, (cmd: any, send: (message: object) => void) => un
 };
 
 const server = Bun.serve({
-  port: 3000, hostname: '127.0.0.1',
+  port, hostname: '127.0.0.1',
   fetch(request, server) {
     const url = new URL(request.url);
     if (url.pathname === '/pair' && request.method === 'POST') {

@@ -5,8 +5,6 @@ import { join } from 'node:path';
 import { openDatabase } from './database';
 import type { Turn, TurnOptions } from './harness';
 import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { issueUrl, serveMcp } from './mcp';
 import { instructionsFile, setSpecialistModel } from './persona';
 import { Sessions } from './sessions';
@@ -40,7 +38,7 @@ function setup(root = '/nonexistent') {
   const rpc = async (callerId: number, method: string, params: unknown = {}) => {
     const res = await fetch(`${server.url}mcp/${callerId}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${(sessions as any).tokens.get(callerId)}` },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
     });
     return { status: res.status, body: res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text() };
@@ -102,7 +100,7 @@ test('Specialist изолирован на своих детях, наследу
 
   // Level-2 child is rejected at HTTP level.
   const denied = await env.rpc(childId, 'tools/list');
-  expect(denied.status).toBe(403);
+  expect(denied.status).toBe(401);
 
   // Stopping Specialist from Secretary Agent cascades to its running child.
   await env.callTool(1, 'stop', { id: s1 });
@@ -191,4 +189,20 @@ test('новый Specialist берёт модель из настройки вл
   setSpecialistModel(root, null);
   const second = await env.callTool(1, 'send', { name: 'Другой', folder: '/tmp/q', message: 'начни' });
   expect(env.sessions.get(second.data.id).info).toMatchObject({ harness: 'claude', model: 'opus' });
+});
+
+test('MCP проверяет токен Session, Host и Origin', async () => {
+  const env = setup();
+  servers.push(env.server);
+  const specialist = await env.sessions.create({ harness: 'claude', model: 'opus', reasoning: null, folder: '/tmp', parentId: 1 });
+  const tokens = (env.sessions as any).tokens;
+  const request = (authorization?: string, extra: Record<string, string> = {}) => fetch(`${env.server.url}mcp/1`, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...(authorization ? { authorization } : {}), ...extra },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  });
+  expect((await request()).status).toBe(401);
+  expect((await request(`Bearer ${tokens.get(specialist.id)}`)).status).toBe(401);
+  expect((await request(`Bearer ${tokens.get(1)}`)).status).toBe(200);
+  expect((await request(`Bearer ${tokens.get(1)}`, { host: 'evil.example' })).status).toBe(403);
+  expect((await request(`Bearer ${tokens.get(1)}`, { origin: 'http://127.0.0.1' })).status).toBe(403);
 });

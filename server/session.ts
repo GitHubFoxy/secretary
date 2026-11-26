@@ -8,7 +8,7 @@ import { MessageQueue, type Message } from './queue';
 
 export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string; name: string | null; reasoning: string | null; hidden: number };
 export type Status = 'idle' | 'running' | 'interrupted' | 'stopped';
-export type TurnContext = Pick<TurnOptions, 'mcpUrl' | 'systemPrompt'>;
+export type TurnContext = Pick<TurnOptions, 'mcpUrl' | 'mcpToken' | 'systemPrompt'>;
 
 export const SECRETARY_ID = 1;
 
