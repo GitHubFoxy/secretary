@@ -1,7 +1,7 @@
 import { Schedules } from './schedules';
 import { recall } from './database';
 import type { Database } from 'bun:sqlite';
-import { chatHistory, reportText } from './chat';
+import { chatHistory, reportText, usageLimitText } from './chat';
 import { hostPath, mcpUrl as defaultMcpUrl } from './config';
 import type { Turn } from './harness';
 import { SECRETARY_PROMPT, specialistPrompt } from './persona';
@@ -126,6 +126,13 @@ export class Sessions {
       this.options.onEvent(session, event, cursor);
       if (event.type === 'status') this.options.onChange();
     });
+    session.onUsageLimit = ({ resetsAt }) => {
+      const now = Date.now();
+      const at = resetsAt !== undefined && resetsAt + 60_000 > now ? resetsAt + 60_000 : now + 30 * 60_000;
+      this.schedules.add(session.id, 'Лимит подписки сбросился, продолжи работу с того места, где остановился', undefined, new Date(at).toISOString());
+      const info = session.info;
+      if (info.parent_id) this.all.get(info.parent_id)?.send(reportText(info, usageLimitText(resetsAt)));
+    };
     // A child's answer goes to its parent as a report unless it explicitly chose NO_REPLY.
     session.onComplete = answer => {
       const info = session.info;

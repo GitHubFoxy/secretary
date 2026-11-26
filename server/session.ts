@@ -1,5 +1,5 @@
 import type { Database } from 'bun:sqlite';
-import { agentAnswer, chatTranscript } from './chat';
+import { agentAnswer, chatTranscript, usageLimit } from './chat';
 import { writeEvent } from './database';
 import type { Turn, TurnOptions } from './harness';
 import { validateImages } from './images';
@@ -33,6 +33,7 @@ type ActiveTurn = {
   // Interrupted by the owner; the request id comes back in interrupt_result.
   userInterrupt?: { requestId?: string };
   answer: string;
+  limit?: { resetsAt?: number };
 };
 
 export class Session {
@@ -43,6 +44,7 @@ export class Session {
   private listeners: ((event: any, cursor?: number) => void)[] = [];
   // Called with the last answer when a turn completes on its own.
   onComplete?: (answer: string) => void;
+  onUsageLimit?: (limit: { resetsAt?: number }) => void;
 
   constructor(
     private db: Database,
@@ -203,7 +205,7 @@ export class Session {
         },
         onDispatching: () => { this.queue.inFlight(items); turn.dispatched = true; },
         onAccepted: () => { turn.accepted = true; this.queue.accept(items); },
-        onEvent: event => { turn.answer = agentAnswer(event) ?? turn.answer; if (speechTarget) this.publish({type:'speech_event', event}); this.emit(event); },
+        onEvent: event => { turn.limit = usageLimit(event) ?? turn.limit; turn.answer = agentAnswer(event) ?? turn.answer; if (speechTarget) this.publish({type:'speech_event', event}); this.emit(event); },
       }, text, images);
       if (!turn.accepted && !completed && !turn.interrupt.signal.aborted && !this.stopped) this.emit({ type: 'error', message: 'Агент завершился без подтверждения сообщения' });
     } catch (error) {
@@ -223,6 +225,10 @@ export class Session {
     // A turn interrupted for an urgent message is not finished: status stays running, no report.
     if (!this.stopped && turn.restarting && !completed && this.queue.length) { void this.next(); return; }
     this.setStatus(this.stopped ? 'stopped' : completed || turn.userInterrupt ? 'idle' : 'interrupted');
+    if (!completed && turn.limit && !turn.userInterrupt && !this.stopped) {
+      this.emit({ type: 'usage_limit', ...turn.limit });
+      try { this.onUsageLimit?.(turn.limit); } catch (error) { console.error('Usage limit recovery failed', error); }
+    }
     // The queue goes on once the turn's messages have left it, whichever way. A failure before dispatch keeps them queued,
     // so a broken launch does not loop; resumePending or the next message retries.
     if (!this.stopped && !turn.items.some(item => this.queue.has(item)) && this.queue.length) void this.next();

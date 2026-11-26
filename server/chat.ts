@@ -33,7 +33,47 @@ export function agentAnswer(event: any): string | null {
   return item?.type === 'agentMessage' && typeof item.text === 'string' ? item.text : null;
 }
 
+// The harness reports reset timestamps in seconds or in its local time in the error text.
+export function usageLimit(event: any): { resetsAt?: number } | null {
+  const error = event?.method === 'turn/completed' ? event.params?.turn?.error
+    : event?.method === 'error' && !event.params?.willRetry ? event.params?.error : null;
+  const claude = event?.type === 'result' && event.is_error && typeof event.result === 'string' ? event.result : '';
+  if (error?.codexErrorInfo !== 'usageLimitExceeded' && !/\b(?:usage|rate)[ _-]limit\b/i.test(claude)) return null;
+  const value = error?.resetsAt ?? event?.resetsAt;
+  let reset = typeof value === 'number' ? (value < 1e12 ? value * 1000 : value)
+    : typeof value === 'string' ? Date.parse(value) : NaN;
+  const message = error?.message ?? claude;
+  if (!Number.isFinite(reset) && typeof message === 'string') {
+    const match = /(?:resets? (?:at|on)|try again at)\s+([^\n]+)/i.exec(message);
+    if (match) {
+      const text = match[1].replace(/\.$/, '').trim();
+      reset = Date.parse(text.replace(/(\d)(?:st|nd|rd|th)\b/g, '$1'));
+      if (!Number.isFinite(reset)) {
+        const time = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i.exec(text);
+        if (time) {
+          let hour = Number(time[1]);
+          const minute = Number(time[2] ?? 0);
+          if (time[3]) hour = hour % 12 + (time[3].toLowerCase() === 'pm' ? 12 : 0);
+          if (hour < 24 && minute < 60) {
+            const date = new Date(event.emittedAtMs ?? Date.now());
+            date.setHours(hour, minute, 0, 0);
+            if (date.getTime() < (event.emittedAtMs ?? Date.now())) date.setDate(date.getDate() + 1);
+            reset = date.getTime();
+          }
+        }
+      }
+    }
+  }
+  return Number.isFinite(reset) ? { resetsAt: reset } : {};
+}
+
+export function usageLimitText(resetsAt?: number) {
+  return 'Упёрся в лимит подписки' + (resetsAt === undefined ? ', время сброса неизвестно' : `, сброс в ${new Date(resetsAt).toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'})}`);
+}
+
 export function chatMessage(event: any, time = ''): ChatMessage | null {
+  if (usageLimit(event)) return null;
+  if (event?.type === 'usage_limit') return { kind: 'error', text: usageLimitText(event.resetsAt) };
   if ((event?.type === 'system' && event.subtype === 'compact_boundary') ||
       (event?.method === 'item/completed' && event.params?.item?.type === 'contextCompaction')) {
     const metadata = event.compact_metadata;
