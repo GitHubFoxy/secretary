@@ -356,3 +356,22 @@ test('черновик сохраняется и удаляется вместе
   sessions.delete(session.id);
   expect(db.query('SELECT * FROM drafts WHERE session_id = ?').get(session.id)).toBeNull();
 });
+
+test('сжатие требует свободную непустую Session и сохраняет событие harness', async () => {
+  const { calls, create } = setup();
+  const s = await create();
+  await expect(s.compact()).rejects.toThrow('Нет контекста');
+  s.send('привет'); calls[0].start();
+  await expect(s.compact()).rejects.toThrow('Сессия работает');
+  calls[0].answer('ответ'); await tick();
+  const compact = s.compact();
+  expect(calls[1].options.compact).toBe(true);
+  expect(calls[1].options.resumeId).toBe('thread-1');
+  expect(calls[1].text).toBe('/compact');
+  calls[1].start();
+  calls[1].options.onEvent({type:'system', subtype:'compact_boundary'});
+  calls[1].end(true); await compact;
+  expect(s.events().some(e => e.subtype === 'compact_boundary')).toBe(true);
+  expect(s.info.status).toBe('idle');
+  expect(history(s)).toEqual(['user привет']);
+});

@@ -230,6 +230,13 @@
   }
   async function submit(immediate = false, video = null) {
     if (!connected || (!video && !message.trim() && !images.length)) return;
+    if (!video && message.trim() === '/compact') {
+      if (images.length) { error = 'Команду /compact нельзя отправить с вложениями'; return; }
+      if (current?.status === 'running') { error = 'Сессия работает'; return; }
+      const id = selected;
+      try { await connection.request({type:'compact', id}); if (selected === id && message.trim() === '/compact') { message = ''; scheduleDraft(''); } } catch (err) { error = err.message; }
+      return;
+    }
     const sent = video ? {id:crypto.randomUUID(), sessionId:video.id, text:'', images:[video], immediate} : {id:crypto.randomUUID(), sessionId:selected, text:message, images, immediate};
     const previous = deliveries.get(sent.sessionId) ?? Promise.resolve();
     let finish;
@@ -463,7 +470,7 @@
           {#if speaking && current?.secretary}
             <SpeakingPill onstop={stopSpeech} />
           {/if}
-          <Composer sessionHarness={current?.harness} sessionFolder={current?.folder} loadCommands={id => connection.request({type:'slashCommands', id}).then(result => result.commands)} bind:this={composer} {videoInterval} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} oninput={scheduleDraft} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
+          <Composer loadReferences={(id, query) => connection.request({type:'references', id, query}).then(result => result.references)} sessionHarness={current?.harness} sessionFolder={current?.folder} loadCommands={id => connection.request({type:'slashCommands', id}).then(result => result.commands)} bind:this={composer} {videoInterval} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} oninput={scheduleDraft} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
         </div>
       </div>
     </div>

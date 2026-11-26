@@ -112,6 +112,27 @@ export class Session {
     this.startOrInterrupt(urgent);
   }
 
+  async compact() {
+    if (this.deleted) throw new Error('Сессия удалена');
+    if (this.turn || this.queue.length) throw new Error('Сессия работает или в очереди есть сообщения');
+    if (!this.row.harness_session_id) throw new Error('Нет контекста для сжатия');
+    const turn: ActiveTurn = this.turn = { items: [], interrupt: new AbortController(), stop: new AbortController(), dispatched: false, accepted: false, restarting: false, answer: '' };
+    this.stopped = false;
+    this.setStatus('running');
+    let completed = false;
+    try {
+      completed = await this.turns[this.row.harness]({
+        ...this.turnContext(this.row), folder: this.row.folder, model: this.row.model, reasoning: this.row.reasoning,
+        resumeId: this.row.harness_session_id, compact: true, secretary: this.id === SECRETARY_ID,
+        interrupt: turn.interrupt.signal, stop: turn.stop.signal,
+        onSessionId: () => {}, onDispatching: () => { turn.dispatched = true; },
+        onAccepted: () => { turn.accepted = true; }, onEvent: event => this.emit(event),
+      }, '/compact', []);
+      if (!completed && !turn.interrupt.signal.aborted && !turn.stop.signal.aborted) this.emit({type:'error', message:'Не удалось сжать контекст'});
+    } catch (error) { this.emit({type:'error', message:String(error)}); }
+    this.finish(turn, completed);
+  }
+
   // Files from the agent appear in the chat like its answer; the turn goes on.
   showFiles(files: FileAttachment[], text: string) { this.emit({ type: 'agent_files', text, files }); }
 
@@ -205,7 +226,7 @@ export class Session {
     // The queue goes on once the turn's messages have left it, whichever way. A failure before dispatch keeps them queued,
     // so a broken launch does not loop; resumePending or the next message retries.
     if (!this.stopped && !turn.items.some(item => this.queue.has(item)) && this.queue.length) void this.next();
-    if (completed && !turn.userInterrupt) {
+    if (completed && !turn.userInterrupt && turn.items.length) {
       try { this.onComplete?.(turn.answer); } catch (error) { console.error('Report failed', error); }
     }
   }
