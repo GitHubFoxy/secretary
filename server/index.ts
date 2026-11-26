@@ -22,8 +22,10 @@ migrateDatabase('secretary.sqlite', databasePath);
 const db = openDatabase(databasePath);
 const publish = (message: object) => server.publish('events', JSON.stringify(message));
 let speechTarget: ((message: object) => void) | undefined;
+let speechOwner: ((message: object) => void) | undefined;
+let speechEventSeen = false;
 const speech = new Speech(message => speechTarget?.(message));
-function stopSpeech() { speech.stop(); speechTarget?.({type:'speech_cancel'}); speechTarget = undefined; }
+function stopSpeech() { speech.stop(); speechTarget?.({type:'speech_cancel'}); speechTarget = undefined; speechOwner = undefined; }
 const publishSessions = () => publish({ type: 'sessions', sessions: sessions.list() });
 const sessions = new Sessions(db, {
   turns: { claude: claudeTurn, codex: codexTurn },
@@ -32,8 +34,8 @@ const sessions = new Sessions(db, {
   // The browser gets chat messages, the queue and interrupt results; other raw events stay in SQLite.
   onEvent(session, event, cursor) {
     if (event.type === 'secretary_reply') { publish(event); return; }
-    if (event.type === 'speech_start') { stopSpeech(); speechTarget = event.speechTarget; speech.start(); speechTarget?.({type:'speech_start'}); return; }
-    if (event.type === 'speech_event') { speech.event(event.event); return; }
+    if (event.type === 'speech_start') { stopSpeech(); speechTarget = event.speechTarget; speechOwner = event.speechTarget.owner ?? event.speechTarget; speechEventSeen = false; speech.start(); speechTarget?.({type:'speech_start'}); return; }
+    if (event.type === 'speech_event') { if (!speechEventSeen) { speechEventSeen = true; speechTarget?.({type:'speech_event'}); } speech.event(event.event); return; }
     if (event.type === 'speech_end') { speech.end(event.interrupted); return; }
     const message = chatMessage(event);
     if (message) publish({ type: 'message', sessionId: session.id, message: {...message, cursor} });
@@ -59,10 +61,19 @@ const commands: Record<string, (cmd: any, send: (message: object) => void) => un
     const session = sessions.get(cmd.id);
     return {...chatPage(db, session.id, Number.isSafeInteger(cmd.before) && cmd.before > 0 ? cmd.before : undefined), queue: session.queue.list()};
   },
-  send: (cmd, send) => { sessions.get(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true, cmd.voice === true, cmd.voice === true ? send : undefined, cmd.files); },
+  send: (cmd, send) => {
+    const target = typeof cmd.voiceTimingId === 'string' && cmd.voiceTimingId.length <= 64
+      ? Object.assign((message: object) => send({...message, voiceTimingId:cmd.voiceTimingId}), {owner:send}) : send;
+    sessions.get(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true, cmd.voice === true, cmd.voice === true ? target : undefined, cmd.files);
+  },
+  voiceTiming: cmd => {
+    const keys = ['listening', 'end', 'recognized', 'event', 'audio'];
+    if (!cmd.values || keys.some(key => cmd.values[key] !== null && (!Number.isFinite(cmd.values[key]) || cmd.values[key] < 0))) throw new Error('Некорректный замер Voice Call');
+    console.log('Voice Call ms', JSON.stringify(Object.fromEntries(keys.map(key => [key, cmd.values[key]]))));
+  },
   sendQueued: cmd => { sessions.get(cmd.id).sendQueued(cmd.messageId); },
-  speechWarm: (_, send) => { if (speechTarget === send) stopSpeech(); warmSpeech(); },
-  speechStop: (_, send) => { if (speechTarget === send) stopSpeech(); },
+  speechWarm: (_, send) => { if (speechOwner === send) stopSpeech(); warmSpeech(); },
+  speechStop: (_, send) => { if (speechOwner === send) stopSpeech(); },
   stop: cmd => { stopSpeech(); sessions.stop(cmd.id); },
   interrupt: cmd => { stopSpeech(); return { accepted: sessions.get(cmd.id).interrupt(cmd.requestId) }; },
   rename: cmd => { sessions.get(cmd.id).setName(cmd.name); publishSessions(); },
