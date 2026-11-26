@@ -23,7 +23,7 @@ export function trimSilence(samples, rate = 16000) {
   return result;
 }
 
-export async function wavFromRecording(chunks) {
+export async function wavFromRecording(chunks, {trim = true, lastSeconds = 0} = {}) {
   const context = new AudioContext();
   try {
     const audio = await context.decodeAudioData(await new Blob(chunks).arrayBuffer());
@@ -32,7 +32,9 @@ export async function wavFromRecording(chunks) {
     source.buffer = audio;
     source.connect(offline.destination);
     source.start();
-    const samples = trimSilence((await offline.startRendering()).getChannelData(0));
+    let samples = (await offline.startRendering()).getChannelData(0);
+    if (lastSeconds) samples = samples.subarray(Math.max(0, samples.length - lastSeconds * 16000));
+    if (trim) samples = trimSilence(samples);
     if (!samples.length) return null;
     const buffer = new ArrayBuffer(44 + samples.length * 2);
     const view = new DataView(buffer);
