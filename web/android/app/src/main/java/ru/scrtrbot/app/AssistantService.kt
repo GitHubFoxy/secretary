@@ -4,6 +4,9 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.util.Base64
+import java.io.ByteArrayOutputStream
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.net.Uri
@@ -32,6 +35,8 @@ class AssistantSessionService : VoiceInteractionSessionService() {
 class AssistantSession(private val service: AssistantSessionService) : VoiceInteractionSession(service) {
     private var webView: WebView? = null
     private lateinit var root: FrameLayout
+    private var screenshot: String? = null
+    private var screenshotTime = 0L
 
     private fun openApp() {
         startAssistantActivity(Intent(service, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -47,6 +52,19 @@ class AssistantSession(private val service: AssistantSessionService) : VoiceInte
         }
         root = FrameLayout(service)
         return root
+    }
+
+    override fun onHandleScreenshot(bitmap: Bitmap?) {
+        super.onHandleScreenshot(bitmap)
+        screenshot = bitmap?.let {
+            val scale = minOf(1.0, 1568.0 / maxOf(it.width, it.height))
+            val scaled = Bitmap.createScaledBitmap(it, maxOf(1, (it.width * scale).toInt()), maxOf(1, (it.height * scale).toInt()), true)
+            val output = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, 80, output)
+            if (scaled !== it) scaled.recycle()
+            Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+        }
+        screenshotTime = android.os.SystemClock.elapsedRealtime()
     }
 
     override fun onShow(args: Bundle?, showFlags: Int) {
@@ -80,30 +98,37 @@ class AssistantSession(private val service: AssistantSessionService) : VoiceInte
             if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
                 WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                 val origins = setOf(host)
-                WebViewCompat.addWebMessageListener(this, "SecretaryOverlayNative", origins) { _, message, _, isMainFrame, _ ->
+                WebViewCompat.addWebMessageListener(this, "SecretaryOverlayNative", origins) { _, message, _, isMainFrame, reply ->
                     if (isMainFrame) when (message.data) {
                         "close" -> hide()
                         "openApp" -> openApp()
+                        "screenshot" -> {
+                            val value = screenshot?.takeIf { android.os.SystemClock.elapsedRealtime() - screenshotTime < 60000 }
+                            screenshot = null
+                            reply.postMessage(value ?: "")
+                        }
                     }
                 }
                 WebViewCompat.addDocumentStartJavaScript(this,
-                    "if (window === window.top) window.SecretaryOverlay = { close: () => SecretaryOverlayNative.postMessage('close'), openApp: () => SecretaryOverlayNative.postMessage('openApp') };",
+                    "if (window === window.top) window.SecretaryOverlay = { close: () => SecretaryOverlayNative.postMessage('close'), openApp: () => SecretaryOverlayNative.postMessage('openApp'), screenshot: () => new Promise(resolve => { SecretaryOverlayNative.onmessage = e => resolve(e.data); SecretaryOverlayNative.postMessage('screenshot'); }) };",
                     origins)
             }
             webChromeClient = object : WebChromeClient() {
                 override fun onPermissionRequest(request: PermissionRequest) {
                     if (!isHost(request.origin) ||
-                        request.resources.any { it != PermissionRequest.RESOURCE_AUDIO_CAPTURE }) {
+                        request.resources.any { it != PermissionRequest.RESOURCE_AUDIO_CAPTURE && it != PermissionRequest.RESOURCE_VIDEO_CAPTURE }) {
                         request.deny()
                         return
                     }
-                    if (service.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    val permissions = request.resources.map { if (it == PermissionRequest.RESOURCE_AUDIO_CAPTURE) Manifest.permission.RECORD_AUDIO else Manifest.permission.CAMERA }.toTypedArray()
+                    if (permissions.all { service.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
                         request.grant(request.resources)
                     } else {
                         window?.window?.apply {
                             addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
                             decorView.visibility = View.INVISIBLE
                         }
+                        AudioPermissionActivity.permissions = permissions
                         AudioPermissionActivity.pending = { granted ->
                             window?.window?.apply {
                                 clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
@@ -121,7 +146,7 @@ class AssistantSession(private val service: AssistantSessionService) : VoiceInte
         root.addView(sheet, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
 
-    override fun onHide() { ReplyService.overlayVisible = false; super.onHide() }
+    override fun onHide() { screenshot = null; ReplyService.overlayVisible = false; super.onHide() }
 
     override fun onBackPressed() { hide() }
 
@@ -134,16 +159,16 @@ class AssistantSession(private val service: AssistantSessionService) : VoiceInte
 }
 
 class AudioPermissionActivity : Activity() {
-    companion object { var pending: ((Boolean) -> Unit)? = null }
+    companion object { var pending: ((Boolean) -> Unit)? = null; var permissions = emptyArray<String>() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+        requestPermissions(permissions, 1)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        pending?.invoke(grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED)
+        pending?.invoke(grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED })
         pending = null
         finish()
     }

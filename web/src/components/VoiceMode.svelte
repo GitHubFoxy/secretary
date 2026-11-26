@@ -7,7 +7,7 @@
   // Голосовой режим: открывается и сразу слушает, отправляет, когда человек замолчал.
   // variant 'sheet' — шторка поверх другого приложения, 'full' — весь экран внутри Secretary App.
   // turn — сообщения текущего хода: последнее сообщение пользователя и всё после него.
-  let { variant = 'sheet', turn = [], sessionId, running = false, processing = false, speaking = false, speechFinishedId = null, connected = false, openedAt = performance.now(), onstart, onvoice, onphoto, oncamera, onstopspeech, onclose, onopenapp } = $props();
+  let { variant = 'sheet', turn = [], sessionId, running = false, processing = false, speaking = false, speechFinishedId = null, connected = false, openedAt = performance.now(), onstart, onvoice, onphoto, oncamera, onscreenshot, onstopspeech, onclose, onopenapp } = $props();
 
   let listening = $state(false), starting = $state(false), waiting = $state(false), hint = $state(''), bars = $state([4, 4, 4, 4, 4]);
   let camera = $state(null), video = $state(null), facing = $state('environment'), cameraStatus = $state('');
@@ -146,6 +146,7 @@
 {/snippet}
 {#snippet body()}
   <div class="mb-4 flex flex-wrap gap-2">
+    {#if onscreenshot}<button class="btn-ghost" onclick={async () => { try { await onscreenshot(); cameraStatus = 'Снимок экрана отправлен'; } catch (error) { cameraStatus = error.message; } }}>Отправить экран при нажатии Power</button>{/if}
     <button class="btn-ghost" onclick={() => camera ? stopCamera() : openCamera()}>{camera ? 'Выключить камеру' : 'Камера'}</button>
     {#if camera}
       <button class="btn-ghost" onclick={() => { facing = facing === 'environment' ? 'user' : 'environment'; openCamera(); }}>Переключить камеру</button>
