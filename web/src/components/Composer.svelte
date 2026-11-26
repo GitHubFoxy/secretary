@@ -1,6 +1,7 @@
 <script>
   import { onDestroy, tick } from 'svelte';
   import Icon from './Icon.svelte';
+  import { filterCommands } from '../slash-commands.js';
   import AttachmentPopover from './AttachmentPopover.svelte';
   import AttachmentStrip from './AttachmentStrip.svelte';
   import VideoRecorderOverlay from './VideoRecorderOverlay.svelte';
@@ -8,7 +9,19 @@
   import { prepareImage } from '../prepare-image.js';
   import { prepareVideo, frameFromCanvas, finishVideo } from '../prepare-video.js';
   // onsubmit(immediate): true — прервать идущий ход и отправить сразу (правая кнопка и Enter на ПК), false — добавить в очередь (левая кнопка во время хода).
-  let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, sessionId, videoInterval = 1, onsubmit, oninterrupt, onvoice, onvideo, onmicpress, onrecordstart, oninput } = $props();
+  let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, sessionId, sessionHarness, sessionFolder, loadCommands, videoInterval = 1, onsubmit, oninterrupt, onvoice, onvideo, onmicpress, onrecordstart, oninput } = $props();
+  let commands = $state([]), commandError = $state(''), menuClosed = $state(false), selectedCommand = $state(0), requestToken = 0;
+  let matches = $derived(filterCommands(commands, value));
+  let menuOpen = $derived(!menuClosed && /^\/[^\s]*$/.test(value));
+  $effect(() => {
+    const id = sessionId;
+    void sessionHarness; void sessionFolder;
+    const open = menuOpen;
+    const token = ++requestToken;
+    commands = []; commandError = ''; selectedCommand = 0;
+    if (open && id != null) loadCommands(id).then(result => { if (token === requestToken) commands = result; }, error => { if (token === requestToken) commandError = error.message; });
+  });
+  function choose(command) { value = `/${command.name} `; menuClosed = true; oninput?.(value); tick().then(() => area?.focus()); }
   let imageError = $state(''), attachOpen = $state(false);
   let area = $state();
   // Как в Telegram: на сенсорном экране нажатие переключает голос и видео, удержание записывает;
@@ -194,6 +207,12 @@
   // На сенсорном экране (основной ввод — палец) Enter переносит строку, отправка — кнопкой.
   const touch = matchMedia('(pointer: coarse)').matches;
   function keydown(e) {
+    if (e.isComposing) return;
+    if (menuOpen) {
+      if (e.key === 'Escape') { e.preventDefault(); menuClosed = true; return; }
+      if (matches.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); selectedCommand = (selectedCommand + (e.key === 'ArrowDown' ? 1 : -1) + matches.length) % matches.length; return; }
+      if (matches.length && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); choose(matches[Math.min(selectedCommand, matches.length - 1)]); return; }
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !touch) {
       e.preventDefault();
       submit();
@@ -207,6 +226,15 @@
 <form class="relative px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2" onsubmit={e => { e.preventDefault(); submit(); }}>
   {#if voiceError}<p role="alert" class="mx-auto max-w-3xl text-sm text-red-400">{voiceError}</p>{/if}
   {#if imageError}<p role="alert" class="mx-auto max-w-3xl text-sm text-red-400">{imageError}</p>{/if}
+  {#if menuOpen}
+    <div class="absolute bottom-full left-3 right-3 z-20 mx-auto max-h-64 max-w-3xl overflow-y-auto rounded-xl border border-neutral-700 bg-neutral-900 p-1 shadow-lg" aria-label="Команды">
+      {#if commandError}<p class="p-2 text-sm text-red-400">{commandError}</p>
+      {:else if !matches.length}<p class="p-2 text-sm text-neutral-400">Нет команд</p>
+      {:else}{#each matches as command, i}
+        <button type="button" class:!bg-neutral-700={i === selectedCommand} class="block w-full rounded-lg p-2 text-left text-sm hover:bg-neutral-700" onclick={() => choose(command)}><span class="text-neutral-100">/{command.name}</span> <span class="text-neutral-400">{command.description}</span></button>
+      {/each}{/if}
+    </div>
+  {/if}
   <AttachmentStrip {images} onremove={remove} />
   <AttachmentPopover open={attachOpen} onclose={() => (attachOpen = false)} onadd={add} />
   <div bind:this={row} role="group" onpointermove={move} onpointerup={up} onpointercancel={() => { clearTimeout(press?.timer); press = null; if (recording && !recording.locked) stop(false); }} class="relative mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-neutral-800 bg-neutral-900 p-2 shadow-lg shadow-black/40 transition-colors focus-within:border-neutral-600">
@@ -232,7 +260,7 @@
       rows="1"
       bind:this={area}
       bind:value
-      oninput={event => oninput?.(event.target.value)}
+      oninput={event => { menuClosed = false; selectedCommand = 0; oninput?.(event.target.value); }}
       onkeydown={keydown}
       onpaste={paste}
       placeholder="Напишите сообщение"

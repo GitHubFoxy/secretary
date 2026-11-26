@@ -1,3 +1,4 @@
+import { slashCommands } from './commands';
 import { onAbort, readJsonLines, spawnHarness, type Turn } from './harness';
 import type { ThreadStartParams } from './protocol/v2/ThreadStartParams';
 import type { TurnStartParams } from './protocol/v2/TurnStartParams';
@@ -7,7 +8,7 @@ export const codexTurn: Turn = async (options, text, images) => {
   const args = ['codex', 'app-server'];
   if (options.mcpUrl) args.push('-c', `mcp_servers.secretary.url="${options.mcpUrl}"`, '-c', `mcp_servers.secretary.http_headers.Authorization="Bearer ${options.mcpToken}"`);
   const harness = spawnHarness(args, options.folder, options);
-  let id = 0;
+  let id = 0, dispatched = false;
   // `accepted` runs as soon as the response is read, before the notifications that follow it in the same chunk.
   const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; accepted?: () => void }>();
   let done!: (value: boolean) => void;
@@ -45,11 +46,19 @@ export const codexTurn: Turn = async (options, text, images) => {
       : await request('thread/start', start);
     options.onSessionId(thread.thread.id);
     if (options.interrupt.aborted) return false;
-    const turn: TurnStartParams = { threadId: thread.thread.id, model: options.model, effort: options.reasoning, input: [{ type: 'text', text, text_elements: [] }, ...images.map(image => ({ type: 'image' as const, url: `data:${image.type};base64,${image.data}` }))] };
+    const match = text.match(/^\/([^\s]+)(?=\s|$)/);
+    const skills = match ? (await slashCommands('codex', options.folder)).filter(skill => skill.name === match[1]) : [];
+    const skill = skills.length === 1 ? skills[0] : undefined;
+    if (options.interrupt.aborted) return false;
+    const turn: TurnStartParams = { threadId: thread.thread.id, model: options.model, effort: options.reasoning, input: [{ type: 'text', text, text_elements: [] }, ...(skill?.path ? [{type: 'skill' as const, name: skill.name, path: skill.path}] : []), ...images.map(image => ({ type: 'image' as const, url: `data:${image.type};base64,${image.data}` }))] };
+    dispatched = true;
     options.onDispatching();
     const started = await request('turn/start', turn, options.onAccepted);
     onAbort(options.interrupt, () => { request('turn/interrupt', { threadId: thread.thread.id, turnId: started.turn.id }).catch(() => {}); });
     return await completed;
+  } catch (error) {
+    if (options.interrupt.aborted && !dispatched) return false;
+    throw error;
   } finally {
     await harness.close();
     await reading;
