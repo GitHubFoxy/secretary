@@ -12,8 +12,7 @@ export async function codexThreadStart(options: Pick<import('./harness').TurnOpt
   return start;
 }
 
-export const codexTurn: Turn = async (options, text, images) => {
-  if (options.interrupt.aborted) return false;
+export async function codexLaunch(options: import('./harness').TurnOptions) {
   const args = ['codex', 'app-server'];
   if (options.mcpUrl) args.push('-c', `mcp_servers.secretary.url="${options.mcpUrl}"`, '-c', `mcp_servers.secretary.http_headers.Authorization="Bearer ${options.mcpToken}"`);
   const env = { ...process.env };
@@ -33,6 +32,12 @@ export const codexTurn: Turn = async (options, text, images) => {
       for (const [name, key] of Object.entries(mapped)) args.push('-c', `${prefix}.env_http_headers.${JSON.stringify(name)}=${JSON.stringify(key)}`);
     }
   }
+  return { args, env };
+}
+
+export const codexTurn: Turn = async (options, text, images) => {
+  if (options.interrupt.aborted) return false;
+  const { args, env } = await codexLaunch(options);
   const harness = spawnHarness(args, options.folder, options, env);
   let id = 0, dispatched = false;
   // `accepted` runs as soon as the response is read, before the notifications that follow it in the same chunk.

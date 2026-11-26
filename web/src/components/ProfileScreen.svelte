@@ -2,6 +2,7 @@
   import { notificationsEnabled, setNotificationsEnabled } from '../browser-notifications.js';
   import { Capacitor } from '@capacitor/core';
   import Icon from './Icon.svelte';
+  import AgentView from './AgentView.svelte';
   import SkillsScreen from './SkillsScreen.svelte';
   import InstructionsEditor from './InstructionsEditor.svelte';
   import MemoryEditor from './MemoryEditor.svelte';
@@ -66,7 +67,9 @@
   </label>
 {/snippet}
 
-{#if screen === 'mcp'}
+{#if screen === 'agent-view'}
+  <AgentView onback={() => (screen = 'main')} />
+{:else if screen === 'mcp'}
   <McpServers {request} onback={() => (screen = 'main')} />
 {:else if screen === 'secretary' || screen === 'specialist'}
   <InstructionsEditor role={screen} {...editors[screen]} bind:dirty onback={() => (screen = 'main')} />
@@ -87,6 +90,7 @@
       <section class="flex flex-col gap-2">
         <h2 class="text-[11px] uppercase tracking-wide text-neutral-500">Агенты</h2>
         <div class="divide-y divide-neutral-800/80 overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/50">
+          {@render row('Что видят агенты', 'Промпты, инструменты и параметры Session', () => (screen = 'agent-view'))}
           {@render row('Secretary Agent', 'Инструкции: как общается и что помнит', () => (screen = 'secretary'))}
           {@render row('Skills', 'Навыки и их версии', () => (screen = 'skills'))}
           {@render row('MCP-серверы', 'Внешние инструменты агентов', () => (screen = 'mcp'))}
