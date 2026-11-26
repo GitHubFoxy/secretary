@@ -15,6 +15,23 @@
   // Картинку открываем внутри приложения: ссылка target="_blank" в Android-оболочке уводит в окно, откуда нет пути назад.
   let viewed = $state(null);
   let stepsOpen = $state(false);
+  let htmlFile = $state(null);
+  let htmlText = $state(null);
+  let htmlError = $state(false);
+  const isHtml = file => /\.html$/i.test(file.name);
+  async function openHtml(file) {
+    htmlFile = file;
+    htmlText = null;
+    htmlError = false;
+    try {
+      const response = await fetch(fileUrl(file));
+      if (!response.ok) throw new Error('Failed to load');
+      const text = await response.text();
+      if (htmlFile?.id === file.id) htmlText = text;
+    } catch {
+      if (htmlFile?.id === file.id) htmlError = true;
+    }
+  }
   const fileUrl = file => `/files/${file.id}/${encodeURIComponent(file.name)}`;
 
   // Фото и видео показываем из images, а их оригиналы лежат в files; остальные файлы остаются карточками.
@@ -103,6 +120,7 @@
                 <span>
                   <span class="block break-all">{image.name}</span>
                   <span class="text-xs text-neutral-400">{fileSize(image.size)}</span>
+                  {#if image.id && isHtml(image)}<button type="button" class="block underline" onclick={() => openHtml(image)}>Открыть</button><a class="block underline" href={fileUrl(image) + '?download'} download={image.name}>Скачать</a>{/if}
                 </span>
               </span>
             {:else if image.video}
@@ -152,6 +170,7 @@
             {:else if file.type.startsWith('audio/')}
               <audio class="w-72 max-w-full" {src} controls preload="metadata"></audio>
             {/if}
+            {#if isHtml(file)}<button type="button" class="rounded-lg bg-neutral-700 px-3 py-2 text-sm text-white" onclick={() => openHtml(file)}>Открыть</button>{/if}
             <!-- ?download: сервер отдаёт файл как вложение, и Android WebView передаёт его системному загрузчику. -->
             <a href={src + '?download'} download={file.name} class="flex max-w-full items-center gap-2 rounded-lg bg-neutral-800 px-3 py-2 text-neutral-100 hover:bg-neutral-700">
               <Icon name="file" class="size-6 shrink-0" />
@@ -173,3 +192,16 @@
 <Modal open={!!viewed} title={viewed?.alt} onclose={() => (viewed = null)}>
   <img class="mx-auto max-h-[70dvh] max-w-full rounded-lg" src={viewed?.src} alt={viewed?.alt} />
 </Modal>
+
+<svelte:window onkeydown={e => { if (htmlFile && e.key === 'Escape') htmlFile = null; }} />
+{#if htmlFile}
+  <div role="dialog" aria-modal="true" aria-label={htmlFile.name} class="fixed inset-0 z-40 flex flex-col bg-neutral-950">
+    <header class="flex shrink-0 items-center justify-between gap-3 px-4 py-3 text-white">
+      <span class="truncate">{htmlFile.name}</span>
+      <button type="button" class="icon-btn" aria-label="Закрыть" onclick={() => htmlFile = null}><Icon name="close" /></button>
+    </header>
+    {#if htmlError}<p class="p-4 text-red-400">Не удалось загрузить файл</p>
+    {:else if htmlText === null}<p class="p-4 text-neutral-400">Загрузка…</p>
+    {:else}<iframe title={htmlFile.name} sandbox srcdoc={htmlText} class="min-h-0 w-full flex-1 bg-white"></iframe>{/if}
+  </div>
+{/if}
