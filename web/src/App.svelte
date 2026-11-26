@@ -18,6 +18,7 @@
   import VoiceMode from './components/VoiceMode.svelte';
   import Modal from './components/Modal.svelte';
   import ProfileScreen from './components/ProfileScreen.svelte';
+  import DownloadsScreen from './components/DownloadsScreen.svelte';
   import CodexLimits from './components/CodexLimits.svelte';
   import SpeakingPill from './components/SpeakingPill.svelte';
   import { mergeSwitches } from './agents.js';
@@ -119,7 +120,7 @@
   $: secretaryForShare = sessions.find(s => s.secretary);
   $: if (shared.length && secretaryForShare && !shareBusy) applyShared(shared[0], secretaryForShare);
   let limitsOpen = false, limits = null, limitsStatus = '';
-  let profileOpen = false, instructionsDirty = false;
+  let profileOpen = false, downloadsOpen = false, instructionsDirty = false;
   let notesOpen = false, notesRevision = 0, notesCount = 0;
   let interruptStates = {};
   const deliveries = new Map();
@@ -403,6 +404,8 @@
   <VoiceMode variant="sheet" {...voiceProps} onclose={() => overlayBridge?.close()} onopenapp={() => overlayBridge?.openApp()} />
 {:else if voiceMode}
   {#key voiceKey}<VoiceMode variant="full" {...voiceProps} onclose={() => (voiceMode = false)} />{/key}
+{:else if downloadsOpen}
+  <DownloadsScreen onback={() => (downloadsOpen = false)} />
 {:else if profileOpen}
   <ProfileScreen
     {ttsEngine}
@@ -476,6 +479,6 @@
     </div>
 
 
-    <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onhide={s => setHidden(s, true)} onrestore={s => setHidden(s, false)} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} onlimits={openLimits} />
+    <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onhide={s => setHidden(s, true)} onrestore={s => setHidden(s, false)} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} onlimits={openLimits} ondownloads={() => { drawerOpen = false; downloadsOpen = true; }} />
   </div>
 {/if}
