@@ -108,7 +108,7 @@
   $: if (shared.length && secretaryForShare && !shareBusy) applyShared(shared[0], secretaryForShare);
   let limitsOpen = false, limits = null, limitsStatus = '';
   let profileOpen = false, instructionsDirty = false;
-  let notesOpen = false, notesRevision = 0;
+  let notesOpen = false, notesRevision = 0, notesCount = 0;
   let interruptStates = {};
   const deliveries = new Map();
   const interruptFeedback = createInterruptFeedback({onChange: (id, state) => { interruptStates = {...interruptStates, [id]:state}; }});
@@ -342,11 +342,12 @@
       {connected}
       onmenu={() => (drawerOpen = true)}
       oncall={openVoiceMode}
-      onnotes={() => (notesOpen = true)}
+      {notesCount}
+      onnotes={() => (notesOpen = !notesOpen)}
       onsettings={openSettings}
     />
 
-    <Notes open={notesOpen} sessionId={selected} {connection} revision={notesRevision} onclose={() => (notesOpen = false)} />
+    <Notes open={notesOpen} sessionId={selected} {connection} revision={notesRevision} oncount={count => notesCount = count} onclose={() => (notesOpen = false)} />
 
     <Modal open={renameOpen} title="Переименовать чат" onclose={() => (renameOpen = false)}>
       <form class="flex flex-col gap-4" onsubmit={e => { e.preventDefault(); rename(); }}>
