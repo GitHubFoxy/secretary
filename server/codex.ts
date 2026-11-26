@@ -4,6 +4,14 @@ import { onAbort, readJsonLines, spawnHarness, type Turn } from './harness';
 import type { ThreadStartParams } from './protocol/v2/ThreadStartParams';
 import type { TurnStartParams } from './protocol/v2/TurnStartParams';
 
+export async function codexThreadStart(options: Pick<import('./harness').TurnOptions, 'folder' | 'secretary' | 'systemPrompt'>): Promise<ThreadStartParams> {
+  const agentsFile = Bun.file(`${options.folder}/AGENTS.md`);
+  const preferences = options.secretary && await agentsFile.exists() ? await agentsFile.text() : undefined;
+  const developerInstructions = [options.systemPrompt, preferences].filter(Boolean).join('\n\n') || undefined;
+  const start: ThreadStartParams = { cwd: options.folder, approvalPolicy: 'never', sandbox: 'danger-full-access', developerInstructions };
+  return start;
+}
+
 export const codexTurn: Turn = async (options, text, images) => {
   if (options.interrupt.aborted) return false;
   const args = ['codex', 'app-server'];
@@ -55,10 +63,8 @@ export const codexTurn: Turn = async (options, text, images) => {
     harness.write({ jsonrpc: '2.0', method: 'initialized' });
     const account = await request('account/read', { refreshToken: false });
     if (account.requiresOpenaiAuth && !account.account) throw new Error('Codex не вошёл в подписку. На Host выполните: codex login --device-auth');
-    const agentsFile = Bun.file(`${options.folder}/AGENTS.md`);
-    const preferences = options.secretary && await agentsFile.exists() ? await agentsFile.text() : undefined;
-    const developerInstructions = [options.systemPrompt, preferences].filter(Boolean).join('\n\n') || undefined;
-    const start: ThreadStartParams = { cwd: options.folder, approvalPolicy: 'never', sandbox: 'danger-full-access', developerInstructions };
+    const start = await codexThreadStart(options);
+    const { developerInstructions } = start;
     const thread = options.resumeId
       ? await request('thread/resume', { threadId: options.resumeId, excludeTurns: true, developerInstructions })
       : await request('thread/start', start);
