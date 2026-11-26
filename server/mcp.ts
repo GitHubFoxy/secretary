@@ -171,14 +171,17 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
     }
   }
 
-  return Bun.serve({
+  const server = Bun.serve({
     hostname: '127.0.0.1',
     port,
     async fetch(req) {
+      const host = req.headers.get('host');
+      if (host !== `127.0.0.1:${server.port}` || req.headers.has('origin')) return new Response('Forbidden', { status: 403 });
       const path = new URL(req.url).pathname;
-      const match = /^\/mcp(?:\/(\d+))?$/.exec(path);
+      const match = /^\/mcp\/(\d+)$/.exec(path);
       if (!match || req.method !== 'POST') return new Response(null, { status: 405 });
       const callerId = match[1] ? Number(match[1]) : SECRETARY_ID;
+      if (!sessions.authorizeMcp(callerId, req.headers.get('authorization'))) return new Response('Unauthorized', { status: 401 });
       let caller;
       try { caller = sessions.get(callerId).info; } catch { return new Response('Session not found', { status: 404 }); }
       const isSecretary = caller.id === SECRETARY_ID;
@@ -196,4 +199,5 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
       return Response.json({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Method not found' } });
     },
   });
+  return server;
 }

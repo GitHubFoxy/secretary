@@ -6,7 +6,7 @@ import type { Image } from './images';
 // Resolves true when the turn completed successfully.
 export type TurnOptions = {
   folder: string; model: string; reasoning: string | null; resumeId: string | null;
-  secretary?: boolean; mcpUrl?: string; systemPrompt?: string;
+  secretary?: boolean; mcpUrl?: string; mcpToken?: string; systemPrompt?: string;
   // Aborted when the owner wants the turn to end. Before dispatch the adapter returns without sending;
   // after it, the adapter asks the harness to stop and kills it if it doesn't within the deadline.
   interrupt: AbortSignal;

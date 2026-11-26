@@ -5,7 +5,7 @@ import type { TurnStartParams } from './protocol/v2/TurnStartParams';
 export const codexTurn: Turn = async (options, text, images) => {
   if (options.interrupt.aborted) return false;
   const args = ['codex', 'app-server'];
-  if (options.mcpUrl) args.push('-c', `mcp_servers.secretary.url="${options.mcpUrl}"`);
+  if (options.mcpUrl) args.push('-c', `mcp_servers.secretary.url="${options.mcpUrl}"`, '-c', `mcp_servers.secretary.http_headers.Authorization="Bearer ${options.mcpToken}"`);
   const harness = spawnHarness(args, options.folder, options);
   let id = 0;
   // `accepted` runs as soon as the response is read, before the notifications that follow it in the same chunk.
