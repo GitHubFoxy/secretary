@@ -256,9 +256,26 @@
     drawerOpen = false; limitsOpen = true; limits = null; limitsStatus = 'Загрузка…';
     loadLimits();
   }
+  function groupSteps(items, running) {
+    const grouped = [];
+    for (const item of items) {
+      if (item.kind !== 'step' && item.kind !== 'thinking') { grouped.push(item); continue; }
+      let group = grouped[grouped.length - 1];
+      if (group?.kind !== 'steps') {
+        group = {kind:'steps', key:item.key, steps:[], thinking:''};
+        grouped.push(group);
+      }
+      if (item.kind === 'step') group.steps.push(item);
+      else group.thinking = item.text;
+    }
+    // Only the last group of a running turn is live; finished turns show what the agent did, not «thinks».
+    const last = grouped.at(-1);
+    if (last?.kind === 'steps' && running) grouped[grouped.length - 1] = {...last, live:true};
+    return grouped;
+  }
   // Queued messages are not accepted by the agent yet, so they come after history.
   $: messages = [
-    ...mergeSwitches(history).map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})),
+    ...groupSteps(mergeSwitches(history).map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})), current?.status === 'running'),
     ...voiceMessages.filter(item => item.id === selected),
     ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:[...item.images, ...(item.files || [])], urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
     ...preparing.filter(item => item.sessionId === selected).map(item => ({...item, kind:'preparing', key:`preparing:${item.id}`})),
