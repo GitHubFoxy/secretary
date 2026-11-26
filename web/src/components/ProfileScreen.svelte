@@ -3,6 +3,7 @@
   import { Capacitor } from '@capacitor/core';
   import Icon from './Icon.svelte';
   import InstructionsEditor from './InstructionsEditor.svelte';
+  import MemoryEditor from './MemoryEditor.svelte';
   import SpecialistModel from './SpecialistModel.svelte';
   import { harnessInfo, modelLabel } from '../agents.js';
 
@@ -64,6 +65,8 @@
 
 {#if screen === 'secretary' || screen === 'specialist'}
   <InstructionsEditor role={screen} {...editors[screen]} bind:dirty onback={() => (screen = 'main')} />
+{:else if screen === 'memory'}
+  <MemoryEditor bind:dirty onback={() => (screen = 'main')} />
 {:else if screen === 'model' && secretary}
   <SpecialistModel value={specialistModel} {secretary} onsave={saveSpecialistModel} onback={() => (screen = 'main')} />
 {:else}
@@ -78,6 +81,7 @@
         <h2 class="text-[11px] uppercase tracking-wide text-neutral-500">Агенты</h2>
         <div class="divide-y divide-neutral-800/80 overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/50">
           {@render row('Secretary Agent', 'Инструкции: как общается и что помнит', () => (screen = 'secretary'))}
+          {@render row('Память', 'Факты и договорённости', () => (screen = 'memory'))}
           {@render row('Specialists', 'Инструкции для всех Specialists', () => (screen = 'specialist'))}
           <button type="button" class="flex w-full cursor-pointer items-center gap-3 px-3.5 py-3 text-left transition-colors hover:bg-neutral-800/60 disabled:cursor-default" disabled={!secretary} onclick={() => (screen = 'model')}>
             <span class="flex-1 text-sm text-neutral-100">Модель новых Specialists</span>
