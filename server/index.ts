@@ -1,5 +1,6 @@
 import { authorized, pair } from './auth';
 import { slashCommands } from './commands';
+import { findFiles } from './references';
 import { chatPage, chatMessage } from './chat';
 import { claudeTurn } from './claude';
 import { codexRateLimits, codexTurn } from './codex';
@@ -59,6 +60,14 @@ function sameOrigin(request: Request, url: URL) {
 
 // The browser adapter. Every command gets exactly one answer with its requestId: `reply` with the result or `error`.
 const commands: Record<string, (cmd: any, send: (message: object) => void) => unknown> = {
+  compact: cmd => sessions.get(cmd.id).compact(),
+  references: async cmd => {
+    const session = sessions.get(cmd.id);
+    const query = cmd.query;
+    const files = await findFiles(session.info.folder, query);
+    const agents = sessions.list().filter(s => !s.internal && s.id !== session.id && `${s.name || ''} #${s.id}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0, 30);
+    return { references: [...agents.map(s => ({label:`@${s.name || 'Session'} (#${s.id})`, value:`@${s.name || 'Session'} (#${s.id})`})), ...files.map(path => ({label:path, value:path}))] };
+  },
   slashCommands: async cmd => { const {harness, folder} = sessions.get(cmd.id).info; return {commands: await slashCommands(harness, folder)}; },
   sudoApprove: cmd => sudo.approve(cmd.sudoId, cmd.password),
   sudoReject: cmd => sudo.reject(cmd.sudoId),

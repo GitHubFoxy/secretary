@@ -46,6 +46,11 @@ export const codexTurn: Turn = async (options, text, images) => {
       : await request('thread/start', start);
     options.onSessionId(thread.thread.id);
     if (options.interrupt.aborted) return false;
+    if (options.compact) {
+      options.onDispatching();
+      await request('thread/compact/start', { threadId: thread.thread.id }, options.onAccepted);
+      return await completed;
+    }
     const match = text.match(/^\/([^\s]+)(?=\s|$)/);
     const skills = match ? (await slashCommands('codex', options.folder)).filter(skill => skill.name === match[1]) : [];
     const skill = skills.length === 1 ? skills[0] : undefined;

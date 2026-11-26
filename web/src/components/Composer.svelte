@@ -9,19 +9,31 @@
   import { prepareImage } from '../prepare-image.js';
   import { prepareVideo, frameFromCanvas, finishVideo } from '../prepare-video.js';
   // onsubmit(immediate): true — прервать идущий ход и отправить сразу (правая кнопка и Enter на ПК), false — добавить в очередь (левая кнопка во время хода).
-  let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, sessionId, sessionHarness, sessionFolder, loadCommands, videoInterval = 1, onsubmit, oninterrupt, onvoice, onvideo, onmicpress, onrecordstart, oninput } = $props();
+  let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, sessionId, sessionHarness, sessionFolder, loadCommands, loadReferences, videoInterval = 1, onsubmit, oninterrupt, onvoice, onvideo, onmicpress, onrecordstart, oninput } = $props();
   let commands = $state([]), commandError = $state(''), menuClosed = $state(false), selectedCommand = $state(0), requestToken = 0;
-  let matches = $derived(filterCommands(commands, value));
-  let menuOpen = $derived(!menuClosed && /^\/[^\s]*$/.test(value));
+  let cursor = $state(0), references = $state([]), referenceError = $state(''), referenceToken = 0;
+  let atMatch = $derived(/(?:^|\s)@([^\s@]*)$/.exec(value.slice(0, cursor)));
+  let matches = $derived(atMatch ? references : filterCommands(commands, value));
+  let menuOpen = $derived(!menuClosed && (!!atMatch || /^\/[^\s]*$/.test(value)));
+  $effect(() => {
+    const id = sessionId, query = atMatch?.[1], token = ++referenceToken;
+    references = []; referenceError = '';
+    if (query !== undefined && id != null && !menuClosed) loadReferences(id, query).then(result => { if (token === referenceToken) references = result; }, error => { if (token === referenceToken) referenceError = error.message; });
+  });
   $effect(() => {
     const id = sessionId;
     void sessionHarness; void sessionFolder;
     const open = menuOpen;
     const token = ++requestToken;
     commands = []; commandError = ''; selectedCommand = 0;
-    if (open && id != null) loadCommands(id).then(result => { if (token === requestToken) commands = result; }, error => { if (token === requestToken) commandError = error.message; });
+    if (open && !atMatch && id != null) loadCommands(id).then(result => { if (token === requestToken) commands = [{name:'compact', description:'Сжать контекст'}, ...result]; }, error => { if (token === requestToken) commandError = error.message; });
   });
-  function choose(command) { value = `/${command.name} `; menuClosed = true; oninput?.(value); tick().then(() => area?.focus()); }
+  function choose(command) {
+    let position;
+    if (atMatch) { const start = cursor - atMatch[1].length - 1; value = value.slice(0, start) + command.value + ' ' + value.slice(cursor); position = start + command.value.length + 1; }
+    else { value = `/${command.name}${command.name === 'compact' ? '' : ' '}`; position = value.length; }
+    menuClosed = true; oninput?.(value); tick().then(() => { area?.focus(); area?.setSelectionRange(position, position); cursor = position; });
+  }
   let imageError = $state(''), attachOpen = $state(false);
   let area = $state();
   // Как в Telegram: на сенсорном экране нажатие переключает голос и видео, удержание записывает;
@@ -228,10 +240,10 @@
   {#if imageError}<p role="alert" class="mx-auto max-w-3xl text-sm text-red-400">{imageError}</p>{/if}
   {#if menuOpen}
     <div class="absolute bottom-full left-3 right-3 z-20 mx-auto max-h-64 max-w-3xl overflow-y-auto rounded-xl border border-neutral-700 bg-neutral-900 p-1 shadow-lg" aria-label="Команды">
-      {#if commandError}<p class="p-2 text-sm text-red-400">{commandError}</p>
-      {:else if !matches.length}<p class="p-2 text-sm text-neutral-400">Нет команд</p>
+      {#if atMatch ? referenceError : commandError}<p class="p-2 text-sm text-red-400">{atMatch ? referenceError : commandError}</p>
+      {:else if !matches.length}<p class="p-2 text-sm text-neutral-400">{atMatch ? 'Нет результатов' : 'Нет команд'}</p>
       {:else}{#each matches as command, i}
-        <button type="button" class:!bg-neutral-700={i === selectedCommand} class="block w-full rounded-lg p-2 text-left text-sm hover:bg-neutral-700" onclick={() => choose(command)}><span class="text-neutral-100">/{command.name}</span> <span class="text-neutral-400">{command.description}</span></button>
+        <button type="button" class:!bg-neutral-700={i === selectedCommand} class="block w-full rounded-lg p-2 text-left text-sm hover:bg-neutral-700" onclick={() => choose(command)}><span class="text-neutral-100">{atMatch ? command.label : `/${command.name}`}</span> <span class="text-neutral-400">{command.description || ''}</span></button>
       {/each}{/if}
     </div>
   {/if}
@@ -260,7 +272,9 @@
       rows="1"
       bind:this={area}
       bind:value
-      oninput={event => { menuClosed = false; selectedCommand = 0; oninput?.(event.target.value); }}
+      oninput={event => { cursor = event.target.selectionStart; menuClosed = false; selectedCommand = 0; oninput?.(event.target.value); }}
+      onclick={event => { cursor = event.target.selectionStart; }}
+      onkeyup={event => { cursor = event.target.selectionStart; }}
       onkeydown={keydown}
       onpaste={paste}
       placeholder="Напишите сообщение"
