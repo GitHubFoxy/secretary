@@ -1,3 +1,4 @@
+import { recall } from './database';
 import type { Database } from 'bun:sqlite';
 import { chatHistory, reportText } from './chat';
 import { hostPath, mcpUrl as defaultMcpUrl } from './config';
@@ -62,6 +63,7 @@ export class Sessions {
 
   children(parentId: number) { return [...this.all.values()].filter(s => s.info.parent_id === parentId); }
 
+  recall(id: number, query: string) { return recall(this.db, id, query); }
   chatHistory(id: unknown, limit: number) { return chatHistory(this.db, this.get(id).id, limit); }
 
   stop(id: unknown) {

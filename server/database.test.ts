@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { migrateDatabase, openDatabase } from './database';
+import { migrateDatabase, openDatabase, recall, writeEvent } from './database';
 
 test('переносит историю из WAL и не заменяет существующую базу', () => {
   const dir = mkdtempSync(join(tmpdir(), 'secretary-copy-'));
@@ -37,5 +37,25 @@ test('обновляет старую базу без потери данных 
       expect(db.query('SELECT model, hidden FROM sessions WHERE id = 1').get()).toEqual({ model: 'opus', hidden: 0 });
       db.close();
     }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('индексирует старые и новые сообщения, исключая инструменты', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'secretary-search-'));
+  const path = join(dir, 'db');
+  try {
+    let db = openDatabase(path);
+    db.query('INSERT INTO events VALUES (?, ?, ?)').run(1, JSON.stringify({ type: 'user', message: { content: 'Старая договорённость' } }), '2026-01-01');
+    writeEvent(db, 1, { type: 'result', result: 'Новая встреча' });
+    writeEvent(db, 1, { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'секрет' } }] } });
+    db.close();
+    db = openDatabase(path);
+    expect(recall(db, 1, 'договорённость')[0]).toMatchObject({ text: 'Старая договорённость', time: '2026-01-01' });
+    expect(recall(db, 1, 'встреча').length).toBe(1);
+    expect(recall(db, 1, 'секрет')).toEqual([]);
+    db.close();
+    db = openDatabase(path);
+    expect(recall(db, 1, 'договорённость').length).toBe(1);
+    db.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
