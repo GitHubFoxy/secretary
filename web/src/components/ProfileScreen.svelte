@@ -1,4 +1,5 @@
 <script>
+  import { notificationsEnabled, setNotificationsEnabled } from '../browser-notifications.js';
   import { Capacitor } from '@capacitor/core';
   import Icon from './Icon.svelte';
   import InstructionsEditor from './InstructionsEditor.svelte';
@@ -25,6 +26,13 @@
     secretary: { title: 'Secretary Agent', hint: 'Как Secretary Agent общается с тобой и что о тебе помнит.' },
     specialist: { title: 'Specialists', hint: 'Общие инструкции для всех Specialists. Workers их не получают.' },
   };
+  let browserNotifications = $state(notificationsEnabled());
+  let notificationStatus = $state('');
+  async function toggleNotifications(event) {
+    notificationStatus = await setNotificationsEnabled(event.target.checked);
+    browserNotifications = notificationsEnabled();
+    event.target.checked = browserNotifications;
+  }
   let screen = $state('main');
   let specialistModel = $state(undefined);
 
@@ -94,18 +102,21 @@
         {#if voiceStatus}<p role="alert" class="text-sm text-red-400">{voiceStatus}</p>{/if}
       </section>
 
-      {#if Capacitor.isNativePlatform()}
         <section class="flex flex-col gap-2">
           <h2 class="text-[11px] uppercase tracking-wide text-neutral-500">Это устройство</h2>
           <div class="divide-y divide-neutral-800/80 overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/50 text-sm">
+            {#if Capacitor.isNativePlatform()}
             <button type="button" class="flex w-full cursor-pointer items-center justify-between gap-3 px-3.5 py-3 text-left text-neutral-100 hover:bg-neutral-800/60" onclick={onrequestAssistant}>
               Открывать Secretary по Power
               {#if assistantStatus}<span role="status" class="text-xs text-neutral-400">{assistantStatus}</span>{/if}
             </button>
             <button type="button" class="w-full cursor-pointer px-3.5 py-3 text-left text-red-400 hover:bg-red-950/30" onclick={onresetHost}>Сбросить адрес Host</button>
+            {:else}
+            <label class="flex items-center justify-between gap-3 px-3.5 py-3 text-neutral-100">Уведомления в браузере <input type="checkbox" checked={browserNotifications} onchange={toggleNotifications} /></label>
+            {/if}
           </div>
+          {#if notificationStatus}<p role="alert" class="text-sm text-red-400">{notificationStatus}</p>{/if}
         </section>
-      {/if}
     </div>
   </div>
 {/if}
