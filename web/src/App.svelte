@@ -288,7 +288,7 @@
       if (item.timing) item.timing.recognized = performance.now();
       if (!text) throw new Error('Речь не распознана');
       if (item.timing) voiceTimings.set(item.key, item.timing);
-      await connection.request({type:'send', id:item.id, text:voiceText(text, item.seconds), voice:item.speech === true, voiceTimingId:item.timing ? item.key : undefined});
+      await connection.request({type:'send', id:item.id, text:voiceText(text, item.seconds), voice:item.speech === true, immediate:item.immediate === true, voiceTimingId:item.timing ? item.key : undefined});
       voiceMessages = voiceMessages.filter(v => v.key !== item.key);
     } catch (err) {
       if (item.timing) { if (!voiceTimings.has(item.key)) voiceTimings.set(item.key, item.timing); finishVoiceTiming(item.key); }
