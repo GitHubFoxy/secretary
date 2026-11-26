@@ -1,5 +1,6 @@
 <script>
   import { onMount, tick } from 'svelte';
+  import { notificationsEnabled, shouldNotify } from './browser-notifications.js';
   import { createConnection } from './connection.js';
   import { mergeHistory, insertVoices } from './history.js';
   import { createInterruptFeedback } from './interrupt-feedback.js';
@@ -185,7 +186,20 @@
     }
     historyLoaded = false; historyHasMore = false; drawerOpen = false; loadHistory(id);
   }
+  let openSecretaryPending = false;
+  function openSecretary() {
+    drawerOpen = settingsOpen = renameOpen = profileOpen = voiceMode = notesOpen = limitsOpen = false;
+    const secretary = sessions.find(s => s.secretary);
+    openSecretaryPending = !secretary;
+    if (secretary) select(secretary.id);
+  }
   function handleMessage(msg) {
+    if (msg.type === 'secretary_reply' && shouldNotify({enabled:notificationsEnabled(), permission:globalThis.Notification?.permission, text:msg.text, visibility:document.visibilityState, native:Capacitor.isNativePlatform()})) {
+      try {
+        const notification = new Notification('Secretary', {body:msg.text.slice(0, 200), tag:'secretary-reply'});
+        notification.onclick = () => { notification.close(); window.focus(); openSecretary(); };
+      } catch {}
+    }
     if (msg.type === 'draftChanged' && msg.sessionId === selected && msg.from !== draftFrom && document.activeElement?.id !== 'message') { draftToken++; clearTimeout(draftPending.get(selected)?.timer); draftPending.delete(selected); message = msg.text; }
     if (msg.type === 'notesChanged' && msg.sessionId === selected) notesRevision++;
     if (msg.type === 'speech_start') speech.start();
@@ -193,7 +207,7 @@
     if (msg.type === 'speech_done') speech.done();
     if (msg.type === 'speech_cancel') speech.stop();
     if (msg.type === 'speech_error') { speech.stop(); error = msg.message; }
-    if (msg.type === 'sessions') { sessions = msg.sessions; if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select((sessions.find(s => s.secretary) ?? sessions[0]).id); } }
+    if (msg.type === 'sessions') { sessions = msg.sessions; if (openSecretaryPending && sessions.some(s => s.secretary)) openSecretary(); if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select((sessions.find(s => s.secretary) ?? sessions[0]).id); } }
     if (msg.type === 'message' && msg.sessionId === selected && !history.some(m => m.cursor === msg.message.cursor)) history = [...history, msg.message];
     if (msg.type === 'queue' && msg.sessionId === selected) queue = msg.items;
     if (msg.type === 'interrupt_result') interruptFeedback.result(msg.sessionId, msg.requestId, msg.outcome);
