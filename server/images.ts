@@ -1,4 +1,4 @@
-export type Image = { type: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'; data: string; video?: { seconds: number; time: number; note?: boolean } };
+export type Image = { type: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'; data: string; originalId?: string; video?: { seconds: number; time: number; note?: boolean } };
 
 export function validateImages(value: unknown): Image[] {
   if (value === undefined) return [];
@@ -11,6 +11,7 @@ export function validateImages(value: unknown): Image[] {
     if (!type || image.type !== type) throw new Error('Поддерживаются только PNG, JPEG, GIF и WebP');
     if (image.video !== undefined && (!image.video || !Number.isFinite(image.video.seconds) || image.video.seconds <= 0 || image.video.seconds > 60 || !Number.isInteger(image.video.time) || image.video.time < 0 || image.video.time >= image.video.seconds)) throw new Error('Некорректное время кадра');
     if (image.video?.note !== undefined && typeof image.video.note !== 'boolean') throw new Error('Некорректный признак видеосообщения');
-    return { type, data: image.data, ...(image.video ? {video:{seconds:image.video.seconds, time:image.video.time, ...(image.video.note ? {note:true} : {})}} : {}) } as Image;
+    if (image.originalId !== undefined && (typeof image.originalId !== 'string' || !/^[0-9a-f-]{36}$/.test(image.originalId))) throw new Error('Некорректный оригинал изображения');
+    return { type, data: image.data, ...(image.originalId ? {originalId:image.originalId} : {}), ...(image.video ? {video:{seconds:image.video.seconds, time:image.video.time, ...(image.video.note ? {note:true} : {})}} : {}) } as Image;
   });
 }

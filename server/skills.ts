@@ -85,3 +85,14 @@ export function syncSkills(root: string) {
   }
   skills.sync();
 }
+
+export function skillSettings(request: Request, url: URL, skills: Skills) {
+  try {
+    const name = url.searchParams.get('name');
+    if (request.method === 'GET') return Response.json(name ? skills.details(name) : skills.list().map(n => skills.details(n)));
+    if (!name) throw new Error('Укажите имя skill');
+    if (request.method === 'DELETE') { skills.delete(name); return new Response(null, {status: 204}); }
+    if (request.method === 'POST') return request.json().then(data => { skills.restore(name, data.version); return new Response(null, {status: 204}); }).catch(error => new Response(String(error), {status: 400}));
+    return new Response(null, {status: 405});
+  } catch (error) { return new Response(String(error), {status: 400}); }
+}

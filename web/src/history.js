@@ -18,3 +18,9 @@ export function insertVoices(history, voices) {
   }
   return messages;
 }
+
+export function mergeApprovals(history) {
+  const kinds = ['sudo', 'skill', 'secret'];
+  return history.filter(m => !kinds.includes(m.kind) || !m.status).map(m => kinds.includes(m.kind)
+    ? {...m, status: history.findLast(e => e.kind === m.kind && e.id === m.id && e.status)?.status} : m);
+}

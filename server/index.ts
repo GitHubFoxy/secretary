@@ -1,8 +1,7 @@
-import { Skills } from './skills';
 import { agentView } from './observability';
 import { cameraRequests } from './camera';
 import { servePreview } from './preview';
-import { authorized, pair } from './auth';
+import { openAuth } from './auth';
 import { slashCommands } from './commands';
 import { findFiles } from './references';
 import { chatPage, chatMessage } from './chat';
@@ -12,9 +11,8 @@ import { port, secretaryFolder } from './config';
 import { fileResponse, saveFile } from './files';
 import { migrateDatabase, openDatabase } from './database';
 import { serveMcp } from './mcp';
-import { Memory } from './memory';
-import { Sudo } from './sudo';
-import { Secrets } from './secrets';
+import { Memory, memorySettings } from './memory';
+import { skillSettings } from './skills';
 import { ExternalMcp } from './external-mcp';
 import { getDraft, saveDraft } from './drafts';
 import { listNotes, saveNote, deleteNote } from './notes';
@@ -25,6 +23,7 @@ import { Speech, warmSpeech, ttsEngine, setTtsEngine } from './speech';
 import { transcribe, voiceModel, setVoiceModel } from './voice';
 import { turnComplete } from './smart-turn';
 
+const auth = openAuth(secretaryFolder);
 const camera = cameraRequests(secretaryFolder);
 const memory = new Memory(secretaryFolder);
 const externalMcp = new ExternalMcp(secretaryFolder);
@@ -58,10 +57,6 @@ const sessions = new Sessions(db, {
   },
 });
 
-const skills = new Skills(secretaryFolder, (id, event) => sessions.get(id).emit(event));
-const secrets = new Secrets(secretaryFolder, (id, event) => sessions.get(id).emit(event));
-const sudo = new Sudo((id, event) => sessions.get(id).emit(event));
-
 // Browsers send Origin; a foreign one is rejected. Requests without Origin (curl) pass.
 function sameOrigin(request: Request, url: URL) {
   const origin = request.headers.get('origin');
@@ -84,12 +79,12 @@ const commands: Record<string, (cmd: any, send: (message: object) => void) => un
     return { references: [...agents.map(s => ({label:`@${s.name || 'Session'} (#${s.id})`, value:`@${s.name || 'Session'} (#${s.id})`})), ...files.map(path => ({label:path, value:path}))] };
   },
   slashCommands: async cmd => { const {harness, folder} = sessions.get(cmd.id).info; return {commands: await slashCommands(harness, folder)}; },
-  skillApprove: cmd => skills.approve(cmd.skillId),
-  skillReject: cmd => skills.reject(cmd.skillId),
-  secretApprove: cmd => secrets.approve(cmd.sudoId, cmd.password),
-  secretReject: cmd => secrets.reject(cmd.sudoId),
-  sudoApprove: cmd => sudo.approve(cmd.sudoId, cmd.password),
-  sudoReject: cmd => sudo.reject(cmd.sudoId),
+  skillApprove: cmd => sessions.approvals.skills.approve(cmd.skillId),
+  skillReject: cmd => sessions.approvals.skills.reject(cmd.skillId),
+  secretApprove: cmd => sessions.approvals.secrets.approve(cmd.sudoId, cmd.password),
+  secretReject: cmd => sessions.approvals.secrets.reject(cmd.sudoId),
+  sudoApprove: cmd => sessions.approvals.sudo.approve(cmd.sudoId, cmd.password),
+  sudoReject: cmd => sessions.approvals.sudo.reject(cmd.sudoId),
   draft: cmd => ({text: getDraft(db, sessions.get(cmd.id).id)}),
   draftSave: cmd => { const session = sessions.get(cmd.id); if (typeof cmd.from !== 'string') throw new Error('Некорректный id вкладки'); saveDraft(db, session.id, cmd.text); publish({type:'draftChanged', sessionId:session.id, text:cmd.text, from:cmd.from}); },
   notes: cmd => ({notes: listNotes(db, sessions.get(cmd.id).id)}),
@@ -152,7 +147,7 @@ const server = Bun.serve({
 
 // Loading and resuming sessions can publish events.
 sessions.load(secretaryFolder);
-serveMcp(sessions, { sudo, secrets, skills, cameraFrame: () => camera.request() });
+serveMcp(sessions, { cameraFrame: () => camera.request() });
 servePreview();
 sessions.resumePending();
 sessions.schedules.tick();
@@ -165,12 +160,12 @@ function handleRequest(request: Request, server: any) {
     if (url.pathname === '/pair' && request.method === 'POST') {
       if (!sameOrigin(request, url)) return new Response('Forbidden', { status: 403 });
       return request.formData().then(form => {
-        const token = pair(String(form.get('code') || ''), server.requestIP(request)?.address ?? 'unknown');
+        const token = auth.pair(String(form.get('code') || ''), server.requestIP(request)?.address ?? 'unknown');
         if (!token) return new Response('Неверный или просроченный код.', { status: 401 });
         return new Response(null, { status: 303, headers: { 'Location': '/', 'Set-Cookie': `secretary=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=31536000`, 'Cache-Control': 'no-store' } });
       }).catch(() => new Response('Invalid request', { status: 400 }));
     }
-    if (!authorized(request)) {
+    if (!auth.authorized(request)) {
       if (url.pathname === '/' && request.method === 'GET') return new Response(Bun.file(`${import.meta.dir}/login.html`), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
       return new Response('Unauthorized', { status: 401, headers: { 'Cache-Control': 'no-store' } });
     }
@@ -213,29 +208,8 @@ function handleRequest(request: Request, server: any) {
       if (request.method === 'PUT') return request.text().then(setTtsEngine).then(() => new Response(null, {status:204}), error => new Response(String(error), {status:400}));
       return new Response(null, {status:405});
     }
-    if (url.pathname === '/settings/skills') {
-      try {
-        const name = url.searchParams.get('name');
-        if (request.method === 'GET') return Response.json(name ? skills.details(name) : skills.list().map(n => skills.details(n)));
-        if (!name) throw new Error('Укажите имя skill');
-        if (request.method === 'DELETE') { skills.delete(name); return new Response(null, {status: 204}); }
-        if (request.method === 'POST') return request.json().then(data => { skills.restore(name, data.version); return new Response(null, {status: 204}); }).catch(error => new Response(String(error), {status: 400}));
-        return new Response(null, {status: 405});
-      } catch (error) { return new Response(String(error), {status: 400}); }
-    }
-    if (url.pathname === '/settings/memory') {
-      try {
-        const name = url.searchParams.get('name');
-        if (request.method === 'GET') return Response.json(name === null ? memory.list() : memory.read(name));
-        if (request.method === 'PUT' || request.method === 'DELETE') return request.json().then(data => {
-          if (!name) throw new Error('Укажите имя файла');
-          if (request.method === 'PUT') return Response.json(memory.write(name, data.text, data.version));
-          memory.delete(name, data.version);
-          return new Response(null, {status: 204});
-        }).catch(error => new Response(String(error), {status: 400}));
-        return new Response(null, {status: 405});
-      } catch (error) { return new Response(String(error), {status: 400}); }
-    }
+    if (url.pathname === '/settings/skills') return skillSettings(request, url, sessions.approvals.skills);
+    if (url.pathname === '/settings/memory') return memorySettings(request, url, memory);
     const role = url.pathname.match(/^\/settings\/agents\/(secretary|specialist)$/)?.[1] as Role | undefined;
     if (role) {
       const file = Bun.file(instructionsFile(secretaryFolder, role));

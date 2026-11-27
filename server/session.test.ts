@@ -1,7 +1,5 @@
-// Session, MessageQueue and Sessions in process, with a scripted harness in place of Claude Code and Codex.
 import { expect, test } from 'bun:test';
 import type { Database } from 'bun:sqlite';
-import { reportText, usageLimitText } from './chat';
 import { openDatabase } from './database';
 import { getDraft, saveDraft } from './drafts';
 import { listNotes, saveNote, deleteNote } from './notes';
@@ -193,7 +191,7 @@ test('отчёт Specialist доходит до родителя, даже ес�
   const parent = await create();
   const child = await create({ parentId: parent.id, name: 'Специалист' });
   child.send('задача'); calls[0].start(); calls[0].answer('готово'); await tick();
-  expect(calls[1].text).toBe(reportText(child.info, 'готово'));
+  expect(calls[1].text).toBe(`[report #${child.id} claude /tmp] готово`);
   calls[1].start(); calls[1].answer('NO_REPLY'); await tick();
   child.send('ещё'); calls[2].start();
   sessions.delete(parent.id);
@@ -236,7 +234,6 @@ test('NO_REPLY у Specialist не отправляет отчёт родител
   expect(calls[0].options.systemPrompt).toContain('Ты — Specialist');
   expect(calls[0].options.mcpUrl).toMatch(/\/mcp\/2$/);
   calls[0].start(); calls[0].answer('NO_REPLY'); await tick();
-  // Secretary Agent should NOT receive a report for NO_REPLY.
   expect(calls).toHaveLength(1);
 
   child.send('задача');
@@ -395,7 +392,7 @@ test('лимит создаёт событие, отчёт родителю и �
   calls[0].end(false); await tick();
   const at = Math.floor(reset / 1000) * 1000;
   expect(child.events().filter(e => e.type === 'usage_limit')).toEqual([{type:'usage_limit', resetsAt:at}]);
-  expect(calls[1].text).toContain(reportText(child.info, usageLimitText(at)));
+  expect(calls[1].text).toContain(`[report #${child.id} codex /tmp] Упёрся в лимит подписки`);
   const restored = new Sessions(db, {turns:{claude: async () => true, codex: async () => true}, checkModel:async () => {}, onEvent() {}, onChange() {}});
   restored.load('/home/u/.secretary');
   const schedules = restored.schedules.list([child.id]);
@@ -424,5 +421,5 @@ test('при ошибке хода родитель получает один о
   const child = await create({ parentId: parent.id });
   child.send('задача'); calls[0].start(); calls[0].fail(); await tick();
   expect(calls).toHaveLength(2);
-  expect(calls[1].text).toBe(reportText(child.info, 'Ход упал: spawn failed'));
+  expect(calls[1].text).toBe(`[report #${child.id} claude /tmp] Ход упал: spawn failed`);
 });

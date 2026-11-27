@@ -4,9 +4,6 @@
   import { wavFromRecording } from '../voice.js';
   import { VAD, voiceActivity, initialVoiceActivity } from '../voice-vad.js';
   import { isTurnComplete } from '../voice-turn.js';
-  // Голосовой режим: открывается и сразу слушает, отправляет, когда человек замолчал.
-  // variant 'sheet' — шторка поверх другого приложения, 'full' — весь экран внутри Secretary App.
-  // turn — сообщения текущего хода: последнее сообщение пользователя и всё после него.
   let { variant = 'sheet', turn = [], sessionId, running = false, processing = false, speaking = false, speechFinishedId = null, connected = false, openedAt = performance.now(), onstart, onvoice, onphoto, oncamera, onscreenshot, onstopspeech, onclose, onopenapp } = $props();
 
   let listening = $state(false), starting = $state(false), waiting = $state(false), hint = $state(''), bars = $state([4, 4, 4, 4, 4]);

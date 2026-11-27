@@ -1,5 +1,6 @@
 <script>
   import Markdown from './Markdown.svelte';
+  import ApprovalCard from './ApprovalCard.svelte';
   import MediaPlayer from './MediaPlayer.svelte';
   import Report from './Report.svelte';
   import Icon from './Icon.svelte';
@@ -9,30 +10,7 @@
   import { fileSize } from '../file-size.js';
   import { harnessInfo, modelLabel } from '../agents.js';
 
-  let { onskill, onsudo, message: m, sessions = [], connected = false, restoreDisabled = false, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing } = $props();
-
-  let password = $state('');
-  let sudoBusy = $state(false);
-  let sudoError = $state('');
-  async function decide(type) {
-    sudoBusy = true; sudoError = '';
-    const secret = password; password = '';
-    try { await onsudo(type, m.id, ['sudoApprove', 'secretApprove'].includes(type) ? secret : undefined); }
-    catch (error) { sudoError = error.message; }
-    finally { sudoBusy = false; }
-  }
-
-  async function decideSkill(type) {
-    sudoBusy = true; sudoError = '';
-    try { await onskill(type, m.id); } catch (error) { sudoError = error.message; } finally { sudoBusy = false; }
-  }
-
-  function skillDiff(before, after) {
-    const oldLines = (before || '').split('\n'), newLines = (after || '').split('\n');
-    while (oldLines.length && newLines.length && oldLines[0] === newLines[0]) { oldLines.shift(); newLines.shift(); }
-    while (oldLines.length && newLines.length && oldLines.at(-1) === newLines.at(-1)) { oldLines.pop(); newLines.pop(); }
-    return [...oldLines.map(line => `- ${line}`), ...newLines.map(line => `+ ${line}`)].join('\n');
-  }
+  let { ondecide, message: m, sessions = [], connected = false, restoreDisabled = false, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing } = $props();
 
   const isImage = type => type.startsWith('image/');
   const isVideo = type => type.startsWith('video/');
@@ -58,14 +36,14 @@
   }
   const fileUrl = file => `/files/${file.id}/${encodeURIComponent(file.name)}`;
 
-  // Фото и видео показываем из images, а их оригиналы лежат в files; остальные файлы остаются карточками.
-  // Оригиналы фото идут в том же порядке, что и их кадры в images.
   function shown(images) {
     const photos = images.filter(image => image.file && isImage(image.type));
+    const explicit = images.some(image => image.originalId);
     return images
       .filter(image => !image.file || !(isImage(image.type) || isVideo(image.type)))
-      .map(image => image.file || image.video ? image : { ...image, original: photos.shift() });
+      .map(image => image.file ? image : { ...image, original: image.originalId ? images.find(file => file.file && file.id === image.originalId) : !explicit && !image.video ? photos.shift() : undefined });
   }
+
 </script>
 
 {#snippet agent(a)}
@@ -74,37 +52,8 @@
 {/snippet}
 
 <div data-message>
-  {#if m.kind === 'skill'}
-    <div class="max-w-full rounded-xl border border-amber-700 bg-neutral-900 p-4 text-sm text-neutral-100">
-      <p>Предложение skill: {m.name}</p>
-      <p class="whitespace-pre-wrap break-words">Причина: {m.reason}</p>
-      <p class="mt-2">Изменения:</p><pre class="max-h-96 overflow-auto whitespace-pre-wrap break-all">{skillDiff(m.before, m.content)}</pre>
-      {#if m.status}<p class="mt-2">{m.status === 'approved' ? 'Принято' : 'Отклонено'}</p>
-      {:else}<div class="mt-3 flex gap-3"><button class="rounded bg-amber-700 px-3 py-2" disabled={!connected || sudoBusy} onclick={() => decideSkill('skillApprove')}>Принять</button><button class="rounded bg-neutral-700 px-3 py-2" disabled={!connected || sudoBusy} onclick={() => decideSkill('skillReject')}>Отклонить</button></div>{#if sudoError}<p class="mt-2 text-red-400">{sudoError}</p>{/if}{/if}
-    </div>
-  {:else if m.kind === 'secret'}
-    <div class="max-w-full rounded-xl border border-amber-700 bg-neutral-900 p-4 text-sm text-neutral-100">
-      <p>Агент запрашивает секрет: {m.name}</p><p class="whitespace-pre-wrap break-words">Причина: {m.reason}</p>
-      {#if m.status}<p class="mt-2">{m.status === 'saved' ? 'Сохранён' : m.status}</p>
-      {:else}
-        <label class="mt-3 block">Секрет <input class="mt-1 block w-full rounded bg-neutral-800 p-2" type="password" autocomplete="off" bind:value={password} /></label>
-        <div class="mt-3 flex gap-3"><button class="rounded bg-amber-700 px-3 py-2" disabled={!connected || sudoBusy || !password} onclick={() => decide('secretApprove')}>Сохранить</button><button class="rounded bg-neutral-700 px-3 py-2" disabled={!connected || sudoBusy} onclick={() => decide('secretReject')}>Отклонить</button></div>
-        {#if sudoError}<p class="mt-2 text-red-400">{sudoError}</p>{/if}
-      {/if}
-    </div>
-  {:else if m.kind === 'sudo'}
-    <div class="max-w-full rounded-xl border border-amber-700 bg-neutral-900 p-4 text-sm text-neutral-100">
-      <p>Агент хочет выполнить от root:</p>
-      <pre class="my-2 whitespace-pre-wrap break-all">{m.command}</pre>
-      <p class="whitespace-pre-wrap break-words">Причина: {m.reason}</p>
-      {#if m.status}<p class="mt-2">{({completed:'Выполнено', rejected:'Отклонено', timeout:'Время ожидания истекло', error:'Ошибка запуска'})[m.status] || m.status}</p>
-      {:else}
-        <label class="mt-3 block">Пароль sudo <input class="mt-1 block w-full rounded bg-neutral-800 p-2" type="password" autocomplete="off" bind:value={password} /></label>
-        <div class="mt-3 flex gap-3"><button class="rounded bg-amber-700 px-3 py-2" disabled={!connected || sudoBusy || !password} onclick={() => decide('sudoApprove')}>Выполнить</button><button class="rounded bg-neutral-700 px-3 py-2" disabled={!connected || sudoBusy} onclick={() => decide('sudoReject')}>Отклонить</button></div>
-        {#if sudoError}<p class="mt-2 text-red-400">{sudoError}</p>{/if}
-      {/if}
-    </div>
-  {:else if m.kind === 'activity'}
+  {#if ['skill', 'secret', 'sudo'].includes(m.kind)}
+    <ApprovalCard message={m} {connected} {ondecide} />  {:else if m.kind === 'activity'}
     <p class="truncate text-sm text-neutral-400">{m.text}</p>
   {:else if m.kind === 'steps'}
     <div class="max-w-[85%] text-sm text-neutral-400">
@@ -157,7 +106,8 @@
       {#if m.images.some(image => image.video?.note)}
         {@const frame = m.images.find(image => image.video?.note)}
         {@const video = videoText(m.text)}
-        {@const src = videoFile ? fileUrl(videoFile) : frame.url}
+        {@const original = m.images.find(image => image.file && image.id === frame.originalId) || videoFile}
+        {@const src = original ? fileUrl(original) : frame.url}
         {#if src}
           <MediaPlayer {src} video round poster={'data:' + frame.type + ';base64,' + frame.data} title="Видеосообщение" />
         {:else}
@@ -177,7 +127,7 @@
                 </span>
               </span>
             {:else if image.video}
-              {@const src = videoFile ? fileUrl(videoFile) : image.url}
+              {@const src = image.original ? fileUrl(image.original) : videoFile ? fileUrl(videoFile) : image.url}
               <span class="relative my-2 block w-fit">
                 {#if src}
                   <MediaPlayer {src} video />

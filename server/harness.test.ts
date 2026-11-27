@@ -1,4 +1,3 @@
-// The adapter contract (harness.ts), checked against fake `claude` and `codex` executables.
 import { afterAll, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -3,10 +3,9 @@
   import Icon from './Icon.svelte';
   import { tick } from 'svelte';
   // bottomInset — высота поля ввода поверх списка (плюс клавиатура), под ней должны оставаться видимыми последние сообщения.
-  let { onskill, onsudo, messages = [], sessions = [], historyLoaded = false, connected = false, historyHasMore = false, historyLoadingOlder = false, onloadOlder, bottomInset = 0, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing, restoreDisabled = false } = $props();
+  let { ondecide, messages = [], sessions = [], historyLoaded = false, connected = false, historyHasMore = false, historyLoadingOlder = false, onloadOlder, bottomInset = 0, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing, restoreDisabled = false } = $props();
   let scroller = $state();
   let content = $state();
-  // Пока пользователь у самого низа, новые размеры списка не сдвигают его последние сообщения под поле ввода.
   let pinned = $state(true);
   let loading = false;
 
@@ -41,7 +40,7 @@
       <p class="py-16 text-center text-sm text-neutral-600">{!connected ? 'Нет связи с Host. Повторное подключение…' : !historyLoaded ? 'Загрузка сообщений…' : 'Сообщений пока нет'}</p>
     {/if}
     {#each messages as m (m.key)}
-      <MessageItem {onskill} {onsudo} message={m} {sessions} {connected} {restoreDisabled} {onselect} {onrestorePreparing} {onsendQueued} {onretryVoice} {oncancelVoice} />
+      <MessageItem {ondecide} message={m} {sessions} {connected} {restoreDisabled} {onselect} {onrestorePreparing} {onsendQueued} {onretryVoice} {oncancelVoice} />
     {/each}
   </div>
 </div>

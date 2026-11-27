@@ -1,4 +1,4 @@
-import { Skills } from './skills';
+import type { Skills } from './skills';
 import { readFileSync } from 'node:fs';
 import { hostPath, mcpPort, secretaryFolder, previewUrl } from './config';
 import { publishHtml } from './preview';
@@ -8,8 +8,8 @@ import { specialistModel } from './persona';
 import { isSpecialist, SECRETARY_ID } from './session';
 import type { Sessions } from './sessions';
 import { createWorktree } from './worktree';
-import { Sudo } from './sudo';
-import { Secrets } from './secrets';
+import type { Sudo } from './sudo';
+import type { Secrets } from './secrets';
 
 const issuesUrl = 'https://github.com/GitHubFoxy/secretary/issues/new';
 
@@ -25,22 +25,72 @@ function buildVersion() {
 
 type ModelList = (harness: string) => Promise<{ id: string; supportedReasoningEfforts: { reasoningEffort: string }[] }[]>;
 
-export function toolsFor(isSecretary: boolean, harnesses: string[]) {
+type ToolContext = {
+  sessions: Sessions;
+  callerId: number;
+  allowed: number[];
+  sudo: Sudo;
+  secrets: Secrets;
+  skills: Skills;
+  root: string;
+  previewBase: string | undefined;
+  cameraFrame: () => Promise<string>;
+  resolveTarget: (callerId: number, isSecretary: boolean, id: unknown, allowSelf?: boolean) => ReturnType<Sessions['get']>;
+  availableModels: () => Promise<Record<string, { id: string; reasoning: string[] }[]>>;
+};
+
+function toolDefinitions(isSecretary: boolean, harnesses: string[]) {
   const target = isSecretary ? 'Specialist' : 'Worker';
   const targetGen = isSecretary ? 'Specialists' : 'твоих Workers';
   return [
-    ['schedule_add', 'Создать расписание: cron из пяти полей или at (ISO 8601 с часовым поясом). Cron использует часовой пояс Host.', { message: { type: 'string' }, session_id: { type: 'number' }, cron: { type: 'string' }, at: { type: 'string' } }, ['message']],
-    ['schedule_list', 'Показать доступные расписания.', {}, []],
-    ['schedule_remove', 'Удалить расписание по id.', { id: { type: 'number' } }, ['id']],
-    ['request_secret', 'Запросить секрет у владельца.', { name: { type: 'string' }, reason: { type: 'string' } }, ['name', 'reason']],
-    ['sudo_run', 'Запросить подтверждение владельца и выполнить команду с sudo.', { command: { type: 'string' }, reason: { type: 'string' } }, ['command', 'reason']],
-    ['skill_propose', 'Предложить владельцу создать или изменить skill.', { name: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, ['name', 'content', 'reason']],
-    ['recall', 'Найти сообщения в истории своей Session.', { query: { type: 'string' } }, ['query']],
+    ['schedule_add', 'Создать расписание: cron из пяти полей или at (ISO 8601 с часовым поясом). Cron использует часовой пояс Host.', { message: { type: 'string' }, session_id: { type: 'number' }, cron: { type: 'string' }, at: { type: 'string' } }, ['message'],
+      async ({ sessions, callerId, allowed }: ToolContext, args: any) => {
+        const target = args.session_id ?? callerId;
+        if (!allowed.includes(target)) throw new Error('Нет доступа к Session');
+        return sessions.schedules.add(target, args.message, args.cron, args.at);
+      },
+    ],
+    ['schedule_list', 'Показать доступные расписания.', {}, [],
+      async ({ sessions, allowed }: ToolContext, args: any) => {
+        return sessions.schedules.list(allowed);
+      },
+    ],
+    ['schedule_remove', 'Удалить расписание по id.', { id: { type: 'number' } }, ['id'],
+      async ({ sessions, allowed }: ToolContext, args: any) => {
+        return sessions.schedules.remove(args.id, allowed);
+      },
+    ],
+    ['request_secret', 'Запросить секрет у владельца.', { name: { type: 'string' }, reason: { type: 'string' } }, ['name', 'reason'],
+      async ({ callerId, secrets }: ToolContext, args: any) => {
+        return secrets.request(callerId, args.name, args.reason);
+      },
+    ],
+    ['sudo_run', 'Запросить подтверждение владельца и выполнить команду с sudo.', { command: { type: 'string' }, reason: { type: 'string' } }, ['command', 'reason'],
+      async ({ sessions, callerId, sudo }: ToolContext, args: any) => {
+        if (typeof args.command !== 'string' || !args.command.trim() || typeof args.reason !== 'string' || !args.reason.trim()) throw new Error('Укажите command и reason');
+        return sudo.request(callerId, args.command, args.reason, sessions.get(callerId).info.folder);
+      },
+    ],
+    ['skill_propose', 'Предложить владельцу создать или изменить skill.', { name: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, ['name', 'content', 'reason'],
+      async ({ callerId, skills }: ToolContext, args: any) => {
+        return skills.propose(callerId, args.name, args.content, args.reason);
+      },
+    ],
+    ['recall', 'Найти сообщения в истории своей Session.', { query: { type: 'string' } }, ['query'],
+      async ({ sessions, callerId }: ToolContext, args: any) => {
+        if (typeof args.query !== 'string') throw new Error('Укажите query');
+        return sessions.recall(callerId, args.query);
+      },
+    ],
     [
       'list',
       `Показать список ${targetGen} (id, имя, папка, harness, модель, статус) и доступные на этом Host модели с уровнями reasoning. Скрытые владельцем — завершённые — показываются только с hidden: true.`,
       { hidden: { type: 'boolean', description: 'Показать только скрытые владельцем' } },
       [],
+      async ({ sessions, callerId, availableModels }: ToolContext, args: any) => {
+        const all = sessions.list().filter(s => (isSecretary ? isSpecialist(s) : s.parent_id === callerId) && !!s.hidden === (args.hidden === true));
+        return { sessions: all, models: await availableModels() };
+      },
     ],
     [
       'send',
@@ -59,96 +109,7 @@ export function toolsFor(isSecretary: boolean, harnesses: string[]) {
         reasoning: { type: 'string', description: 'Уровень reasoning из list (по умолчанию — см. описание send)' },
       },
       ['message'],
-    ],
-    [
-      'read',
-      `Прочитать последние сообщения ${target} по id. По умолчанию возвращает последние 10 очищенных сообщений диалога (user, agent, report, error); передай raw: true для сырых событий.`,
-      {
-        id: { type: 'number', description: `id ${target}` },
-        limit: { type: 'number', description: 'Сколько сообщений вернуть (1–100, по умолчанию 10)' },
-        raw: { type: 'boolean', description: 'Вернуть сырые события harness вместо очищенных сообщений' },
-      },
-      ['id'],
-    ],
-    [
-      'stop',
-      isSecretary
-        ? 'Немедленно остановить Specialist по id вместе с его Workers.'
-        : 'Немедленно остановить одного из твоих Workers по id.',
-      { id: { type: 'number', description: `id ${target}` } },
-      ['id'],
-    ],
-    ['hide', `Скрыть или вернуть ${target} в боковой панели.`, { id: { type: 'number' }, hidden: { type: 'boolean' } }, ['id', 'hidden']],
-    [
-      'send_file',
-      'Показать владельцу файл с Host в твоём чате: картинку, видео, аудио или документ. Владелец сможет открыть его и скачать на устройство.',
-      {
-        path: { type: 'string', minLength: 1, description: 'Путь к файлу на Host: абсолютный или от твоей папки' },
-        caption: { type: 'string', description: 'Подпись к файлу' },
-      },
-      ['path'],
-    ],
-    ['publish_html', 'Опубликовать HTML-файл или каталог с index.html на 24 часа. Ссылка доступна каждому, у кого она есть.', { path: { type: 'string', minLength: 1 } }, ['path']],
-    ...(isSecretary ? [['camera_frame', 'Получить кадр включённой камеры Voice Call по просьбе владельца. Возвращает путь к файлу.', {}, []], [
-      'report_issue',
-      'Подготовить сообщение об ошибке или идее для разработчиков Secretary App. Возвращает ссылку на заполненный GitHub issue: отдай её владельцу, он проверит текст и отправит.',
-      {
-        title: { type: 'string', minLength: 1, description: 'Коротко, что случилось' },
-        body: { type: 'string', minLength: 1, description: 'Что делал владелец, что ожидал, что произошло; текст ошибок, если есть' },
-      },
-      ['title', 'body'],
-    ]] : []),
-  ].map(([name, description, properties, required]) => ({ name, description, inputSchema: { type: 'object', properties, required } }));
-}
-
-// One MCP adapter for both Secretary Agent (level 0) and Specialists (level 1).
-// The caller's session id is in the path (/mcp/<id>); level-2 child sessions do not get MCP.
-export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList, root = secretaryFolder, previewBase = previewUrl, sudo = new Sudo((id, event) => sessions.get(id).emit(event)), secrets = new Secrets(root, (id, event) => sessions.get(id).emit(event)), skills = new Skills(root, (id, event) => sessions.get(id).emit(event)) , cameraFrame = async (): Promise<string> => { throw new Error('Камера не включена'); } } = {}) {
-
-  async function availableModels() {
-    const result: Record<string, { id: string; reasoning: string[] }[]> = {};
-    await Promise.all(sessions.harnesses.map(async harness => {
-      try {
-        const list = await listModels(harness);
-        result[harness] = list.map(m => ({ id: m.id, reasoning: m.supportedReasoningEfforts.map(e => e.reasoningEffort) }));
-      } catch {}
-    }));
-    return result;
-  }
-
-  function resolveTarget(callerId: number, isSecretary: boolean, id: unknown, allowSelf = false) {
-    const target = sessions.get(id);
-    if (!allowSelf && target.id === callerId) throw new Error('Нельзя выполнить это действие для самой себя');
-    if (target.id === SECRETARY_ID && !allowSelf) throw new Error('Нельзя выполнить это действие для Secretary Agent');
-    if (!isSecretary && target.info.parent_id !== callerId) throw new Error('Нет доступа к чужой сессии');
-    return target;
-  }
-
-  async function call(callerId: number, isSecretary: boolean, name: string, args: any) {
-    const allowed = isSecretary ? sessions.list().filter(s => s.id === SECRETARY_ID || isSpecialist(s)).map(s => s.id) : [callerId, SECRETARY_ID];
-    switch (name) {
-      case 'schedule_add': {
-        const target = args.session_id ?? callerId;
-        if (!allowed.includes(target)) throw new Error('Нет доступа к Session');
-        return sessions.schedules.add(target, args.message, args.cron, args.at);
-      }
-      case 'schedule_list': return sessions.schedules.list(allowed);
-      case 'schedule_remove': return sessions.schedules.remove(args.id, allowed);
-      case 'request_secret': return secrets.request(callerId, args.name, args.reason);
-      case 'sudo_run': {
-        if (typeof args.command !== 'string' || !args.command.trim() || typeof args.reason !== 'string' || !args.reason.trim()) throw new Error('Укажите command и reason');
-        return sudo.request(callerId, args.command, args.reason, sessions.get(callerId).info.folder);
-      }
-      case 'skill_propose': return skills.propose(callerId, args.name, args.content, args.reason);
-      case 'recall': {
-        if (typeof args.query !== 'string') throw new Error('Укажите query');
-        return sessions.recall(callerId, args.query);
-      }
-      case 'list': {
-        const all = sessions.list().filter(s => (isSecretary ? isSpecialist(s) : s.parent_id === callerId) && !!s.hidden === (args.hidden === true));
-        return { sessions: all, models: await availableModels() };
-      }
-      case 'send': {
+      async ({ sessions, callerId, root, resolveTarget }: ToolContext, args: any) => {
         if (typeof args.message !== 'string' || !args.message.trim()) throw new Error('Пустое сообщение');
         if (args.worktree === true && (isSecretary || args.id !== undefined || args.folder !== undefined)) throw new Error('worktree доступен только для нового Worker без folder');
         if (args.id !== undefined) {
@@ -186,52 +147,125 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
           throw error;
         }
         return { id: child.id, status: 'running', ...(worktree ? { folder: worktree.folder, branch: worktree.branch } : {}) };
-      }
-      case 'read': {
+      },
+    ],
+    [
+      'read',
+      `Прочитать последние сообщения ${target} по id. По умолчанию возвращает последние 10 очищенных сообщений диалога (user, agent, report, error); передай raw: true для сырых событий.`,
+      {
+        id: { type: 'number', description: `id ${target}` },
+        limit: { type: 'number', description: 'Сколько сообщений вернуть (1–100, по умолчанию 10)' },
+        raw: { type: 'boolean', description: 'Вернуть сырые события harness вместо очищенных сообщений' },
+      },
+      ['id'],
+      async ({ sessions, callerId, resolveTarget }: ToolContext, args: any) => {
         const target = resolveTarget(callerId, isSecretary, args.id, isSecretary);
         const limit = Math.max(1, Math.min(100, Number(args.limit) || 10));
         if (args.raw === true) {
           return target.events().slice(-limit).map(event => Array.isArray(event.images) ? { ...event, images: event.images.length } : event);
         }
         return sessions.chatHistory(target.id, limit).map(m => 'images' in m ? { ...m, images: m.images.length } : m);
-      }
-      case 'stop': {
+      },
+    ],
+    [
+      'stop',
+      isSecretary
+        ? 'Немедленно остановить Specialist по id вместе с его Workers.'
+        : 'Немедленно остановить одного из твоих Workers по id.',
+      { id: { type: 'number', description: `id ${target}` } },
+      ['id'],
+      async ({ sessions, callerId, resolveTarget }: ToolContext, args: any) => {
         const target = resolveTarget(callerId, isSecretary, args.id);
         sessions.stop(target.id);
         return { ok: true };
-      }
-      case 'hide': {
+      },
+    ],
+    ['hide', `Скрыть или вернуть ${target} в боковой панели.`, { id: { type: 'number' }, hidden: { type: 'boolean' } }, ['id', 'hidden'],
+      async ({ sessions, callerId }: ToolContext, args: any) => {
         const target = sessions.get(args.id);
         if (target.info.parent_id !== callerId) throw new Error('Нет доступа к чужой сессии');
         sessions.setHidden(target.id, args.hidden);
         return { ok: true };
-      }
-      case 'send_file': {
+      },
+    ],
+    [
+      'send_file',
+      'Показать владельцу файл с Host в твоём чате: картинку, видео, аудио или документ. Владелец сможет открыть его и скачать на устройство.',
+      {
+        path: { type: 'string', minLength: 1, description: 'Путь к файлу на Host: абсолютный или от твоей папки' },
+        caption: { type: 'string', description: 'Подпись к файлу' },
+      },
+      ['path'],
+      async ({ sessions, callerId, root }: ToolContext, args: any) => {
         if (typeof args.path !== 'string' || !args.path.trim()) throw new Error('Укажите path');
         const caller = sessions.get(callerId);
         const file = await storeFile(hostPath(args.path.trim(), caller.info.folder), root);
         caller.showFiles([file], typeof args.caption === 'string' ? args.caption.trim() : '');
         return { name: file.name, size: file.size };
-      }
-      case 'publish_html': {
+      },
+    ],
+    ['publish_html', 'Опубликовать HTML-файл или каталог с index.html на 24 часа. Ссылка доступна каждому, у кого она есть.', { path: { type: 'string', minLength: 1 } }, ['path'],
+      async ({ sessions, callerId, root, previewBase }: ToolContext, args: any) => {
         if (typeof args.path !== 'string' || !args.path.trim()) throw new Error('Укажите path');
         const caller = sessions.get(callerId);
         const result = await publishHtml(hostPath(args.path.trim(), caller.info.folder), root, previewBase);
         caller.emit({ type: 'agent_preview', ...result });
         return result;
-      }
-      case 'camera_frame': {
+      },
+    ],
+    ...(isSecretary ? [['camera_frame', 'Получить кадр включённой камеры Voice Call по просьбе владельца. Возвращает путь к файлу.', {}, [],
+      async ({ cameraFrame }: ToolContext, args: any) => {
         if (!isSecretary) throw new Error('Неизвестный инструмент');
         return {path: await cameraFrame()};
-      }
-      case 'report_issue': {
+      },
+    ], [
+      'report_issue',
+      'Подготовить сообщение об ошибке или идее для разработчиков Secretary App. Возвращает ссылку на заполненный GitHub issue: отдай её владельцу, он проверит текст и отправит.',
+      {
+        title: { type: 'string', minLength: 1, description: 'Коротко, что случилось' },
+        body: { type: 'string', minLength: 1, description: 'Что делал владелец, что ожидал, что произошло; текст ошибок, если есть' },
+      },
+      ['title', 'body'],
+      async ({ sessions, callerId }: ToolContext, args: any) => {
         if (!isSecretary) throw new Error('Неизвестный инструмент');
         if (typeof args.title !== 'string' || !args.title.trim() || typeof args.body !== 'string' || !args.body.trim()) throw new Error('Укажите title и body');
         return { url: issueUrl(args.title.trim(), args.body.trim(), sessions.get(callerId).info) };
-      }
-      default:
-        throw new Error('Неизвестный инструмент');
-    }
+      },
+    ]] : []),
+  ].map(([name, description, properties, required, call]) => ({ name, description, inputSchema: { type: 'object', properties, required }, call }));
+}
+
+export function toolsFor(isSecretary: boolean, harnesses: string[]) {
+  return toolDefinitions(isSecretary, harnesses).map(({call, ...schema}) => schema);
+}
+
+export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList, root = secretaryFolder, previewBase = previewUrl, cameraFrame = async (): Promise<string> => { throw new Error('Камера не включена'); } } = {}) {
+  const { sudo, secrets, skills } = sessions.approvals;
+
+  async function availableModels() {
+    const result: Record<string, { id: string; reasoning: string[] }[]> = {};
+    await Promise.all(sessions.harnesses.map(async harness => {
+      try {
+        const list = await listModels(harness);
+        result[harness] = list.map(m => ({ id: m.id, reasoning: m.supportedReasoningEfforts.map(e => e.reasoningEffort) }));
+      } catch {}
+    }));
+    return result;
+  }
+
+  function resolveTarget(callerId: number, isSecretary: boolean, id: unknown, allowSelf = false) {
+    const target = sessions.get(id);
+    if (!allowSelf && target.id === callerId) throw new Error('Нельзя выполнить это действие для самой себя');
+    if (target.id === SECRETARY_ID && !allowSelf) throw new Error('Нельзя выполнить это действие для Secretary Agent');
+    if (!isSecretary && target.info.parent_id !== callerId) throw new Error('Нет доступа к чужой сессии');
+    return target;
+  }
+
+  async function call(callerId: number, isSecretary: boolean, name: string, args: any) {
+    const allowed = isSecretary ? sessions.list().filter(s => s.id === SECRETARY_ID || isSpecialist(s)).map(s => s.id) : [callerId, SECRETARY_ID];
+    const tool = toolDefinitions(isSecretary, sessions.harnesses).find(tool => tool.name === name);
+    if (!tool) throw new Error('Неизвестный инструмент');
+    return (tool.call as (context: ToolContext, args: any) => Promise<unknown>)({ sessions, callerId, allowed, sudo, secrets, skills, root, previewBase, cameraFrame, resolveTarget, availableModels }, args);
   }
 
   const server = Bun.serve({

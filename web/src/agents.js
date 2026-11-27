@@ -15,7 +15,6 @@ export function modelLabel(id) {
   return words.join(' ');
 }
 
-// Several switches in a row without messages between them show as one, from the first settings to the last.
 export function mergeSwitches(messages) {
   const merged = [];
   for (const message of messages) {

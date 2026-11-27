@@ -114,7 +114,6 @@ export function specialistPrompt(folder: string) {
   return instructions ? `${SPECIALIST_PROMPT}\n${instructions}\n` : SPECIALIST_PROMPT;
 }
 
-// Harness, model and reasoning for new Specialists; without the file they take the Secretary Agent's.
 export function specialistModel(folder: string): { harness: string; model: string; reasoning: string | null } | null {
   const file = `${folder}/specialist-model.json`;
   return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : null;

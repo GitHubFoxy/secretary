@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { createConnection } from './connection.js';
 
-test('reconnects with backoff, refreshes on open and never resends a command', () => {
+test('reconnects with backoff, refreshes on open and never resends a command', async () => {
   const sockets = [], timers = [], calls = [];
   class FakeSocket {
     constructor(url) { this.url = url; this.readyState = 0; sockets.push(this); }
@@ -12,7 +12,7 @@ test('reconnects with backoff, refreshes on open and never resends a command', (
   const c = createConnection({ url:'ws://example/ws', WebSocketImpl:FakeSocket,
     schedule:(fn, delay) => { const t = {fn, delay}; timers.push(t); return t; }, cancel:t => { t.cancelled = true; },
     onOpen:() => c.request({type:'read', id:1, requestId:'r'}).catch(() => {}), onClose:() => {}, onMessage:() => {} });
-  c.connect(); c.request({type:'send'}).catch(e => expect(e.disconnected).toBe(true));
+  c.connect(); await expect(c.request({type:'send'})).rejects.toMatchObject({disconnected:true});
   sockets[0].open(); c.request({type:'send', text:'hello', requestId:'s'}).catch(() => {});
   sockets[0].close(); expect(timers[0].delay).toBe(1000);
   timers[0].fn(); sockets[1].close(); expect(timers[1].delay).toBe(2000);

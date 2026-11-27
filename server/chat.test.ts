@@ -75,7 +75,10 @@ test('завершённое сжатие обоих harness сохраняет�
   const db = new Database(':memory:');
   db.run('CREATE TABLE events (session_id INTEGER, json TEXT, time TEXT)');
   for (const event of [claude, codex]) db.query('INSERT INTO events VALUES (1, ?, ?)').run(JSON.stringify(event), time);
-  expect(chatPage(db, 1).messages.map(({cursor, ...message}) => message)).toEqual([chatMessage(claude, time), chatMessage(codex, time)]);
+  expect(chatPage(db, 1).messages.map(({cursor, ...message}) => message)).toEqual([
+    {kind:'compaction', time, beforeTokens:27445, afterTokens:1192},
+    {kind:'compaction', time},
+  ]);
 });
 
 test('распознаёт лимит Claude Code и Codex, но не обычные ошибки', () => {

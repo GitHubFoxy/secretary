@@ -26,11 +26,20 @@ export function reportText(child: Child, answer: string) {
   return `[report #${child.id} ${child.harness} ${child.folder}] ${answer}`;
 }
 
-// The final text of a harness turn: Claude Code `result`, Codex `agentMessage`.
 export function agentAnswer(event: any): string | null {
   if (event?.type === 'result' && typeof event.result === 'string') return event.result;
   const item = event?.method === 'item/completed' ? event.params?.item : null;
   return item?.type === 'agentMessage' && typeof item.text === 'string' ? item.text : null;
+}
+
+export function visibleAnswer(text: string | null | undefined): text is string {
+  return !!text && !text.startsWith('NO_REPLY');
+}
+
+export function speechAnswer(event: any) {
+  return event?.type === 'assistant'
+    ? (event.message?.content || []).filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n')
+    : event?.method === 'item/completed' && event.params?.item?.type === 'agentMessage' ? event.params.item.text : '';
 }
 
 // The harness reports reset timestamps in seconds or in its local time in the error text.
@@ -82,12 +91,14 @@ export function chatMessage(event: any, time = ''): ChatMessage | null {
       ...(valid(metadata?.pre_tokens) ? { beforeTokens: metadata.pre_tokens } : {}),
       ...(valid(metadata?.post_tokens) ? { afterTokens: metadata.post_tokens } : {}) };
   }
-  if (event?.type === 'skill_request') return { kind: 'skill', id: event.id, name: event.name, reason: event.reason, before: event.before, content: event.content };
-  if (event?.type === 'skill_result') return { kind: 'skill', id: event.id, status: event.status };
-  if (event?.type === 'secret_request') return { kind: 'secret', id: event.id, name: event.name, reason: event.reason };
-  if (event?.type === 'secret_result') return { kind: 'secret', id: event.id, status: event.status };
-  if (event?.type === 'sudo_request') return { kind: 'sudo', id: event.id, command: event.command, reason: event.reason };
-  if (event?.type === 'sudo_result') return { kind: 'sudo', id: event.id, status: event.status };
+  const approval = event?.type?.match?.(/^(skill|secret|sudo)_(request|result)$/);
+  if (approval) {
+    const kind = approval[1] as 'skill' | 'secret' | 'sudo';
+    if (approval[2] === 'result') return { kind, id: event.id, status: event.status };
+    if (kind === 'skill') return { kind, id: event.id, name: event.name, reason: event.reason, before: event.before, content: event.content };
+    if (kind === 'secret') return { kind, id: event.id, name: event.name, reason: event.reason };
+    return { kind, id: event.id, command: event.command, reason: event.reason };
+  }
   if (event?.type === 'assistant' && Array.isArray(event.message?.content)) {
     const block = event.message.content.find((b: any) => b.type === 'tool_use' || b.type === 'thinking' || b.type === 'text');
     if (block?.type === 'text') return { kind: 'writing' };
@@ -127,7 +138,7 @@ export function chatMessage(event: any, time = ''): ChatMessage | null {
   if (event?.type === 'agent_preview') return { kind: 'agent', text: '', preview: { url: event.url, expires_at: event.expires_at } };
   if (event?.type === 'agent_files') return { kind: 'agent', text: event.text, files: event.files };
   const answer = agentAnswer(event);
-  if (answer !== null) return answer && !answer.startsWith('NO_REPLY') ? { kind: 'agent', text: answer } : null;
+  if (answer !== null) return visibleAnswer(answer) ? { kind: 'agent', text: answer } : null;
   const images: Image[] = event?.images || [];
   const files: FileAttachment[] = event?.files || [];
   if (event?.type === 'user') {
@@ -142,7 +153,6 @@ export function chatMessage(event: any, time = ''): ChatMessage | null {
   return null;
 }
 
-// Chat messages from newest to oldest, scanning raw events backwards.
 function* messagesBefore(db: Database, sessionId: number, before = Number.MAX_SAFE_INTEGER) {
   const query = db.query('SELECT rowid, json, time FROM events WHERE session_id = ? AND rowid < ? ORDER BY rowid DESC LIMIT 200');
   let cursor = before;

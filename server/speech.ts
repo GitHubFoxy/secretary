@@ -1,3 +1,4 @@
+import { speechAnswer, visibleAnswer } from './chat';
 import { Agent, request } from 'node:https';
 import { join } from 'node:path';
 import { secretaryFolder } from './config';
@@ -90,10 +91,8 @@ export class Speech {
   start() { this.stop(); this.controller = new AbortController(); this.queue = Promise.resolve(); }
   event(event: any) {
     if (!this.controller) return;
-    const text = event?.type === 'assistant'
-      ? (event.message?.content || []).filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n')
-      : event?.method === 'item/completed' && event.params?.item?.type === 'agentMessage' ? event.params.item.text : '';
-    if (!text || text.startsWith('NO_REPLY')) return;
+    const text = speechAnswer(event);
+    if (!visibleAnswer(text)) return;
     const signal = this.controller.signal;
     const sentences = splitSentences(speechText(text));
     for (const sentence of sentences) {
