@@ -85,8 +85,8 @@
     {@const voice = parseVoice(m.text)}
     {@const videoFile = m.images.find(image => image.file && isVideo(image.type))}
     <div class="flex flex-col items-end gap-1">
-      {#if m.kind === 'preparing'}<span class="text-xs text-neutral-400">{m.error ? `Не отправлено: ${m.error}` : 'Обработка…'}</span>{/if}
-      {#if m.kind === 'queued'}<span class="text-xs text-neutral-500">{m.urgent ? 'В очереди, срочное' : 'В очереди'}</span>{/if}
+      {#if m.kind === 'preparing'}<span class="text-xs text-neutral-500">{m.error ? `Не отправлено: ${m.error}` : m.images?.some(image => image.processing) ? 'Обработка…' : 'Отправляется…'}</span>{/if}
+      {#if m.kind === 'queued'}<span class="text-xs text-neutral-500">{m.caption ?? (m.urgent ? 'Отправляется…' : 'В очереди…')}</span>{/if}
       {#if m.kind === 'cancelled'}<span class="text-xs text-neutral-500">Не отправлено: сессия остановлена</span>{/if}
       {#if m.kind === 'uncertain'}<span class="text-xs text-neutral-400">Не удалось подтвердить доставку. Проверьте историю перед повторной отправкой.</span>{/if}
       {#if m.images.some(image => image.video?.note)}
@@ -140,7 +140,7 @@
         </div>
       {/if}
       {#if m.kind === 'preparing' && m.error}<button class="btn-ghost text-xs" disabled={restoreDisabled} onclick={() => onrestorePreparing(m.id)}>Вернуть в поле ввода</button>{/if}
-      {#if m.kind === 'queued' && !m.urgent}<button class="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-200 transition-colors hover:border-neutral-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40" disabled={!connected} onclick={() => onsendQueued(m.id)}><Icon name="send" class="size-3.5" />Отправить сейчас</button>{/if}
+      {#if m.kind === 'queued' && m.sendNow}<button class="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-200 transition-colors hover:border-neutral-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40" disabled={!connected} onclick={() => onsendQueued(m.id)}><Icon name="send" class="size-3.5" />Отправить сейчас</button>{/if}
     </div>
   {:else if m.kind === 'error'}
     <div class="flex justify-start">

@@ -9,6 +9,7 @@
   import { HISTORY_INITIAL_LIMIT, retryDelay, mergeOlder, needsInitialTopup } from './history-prefetch.js';
   import { createInterruptFeedback } from './interrupt-feedback.js';
   import { createUpdateChecker } from './updates.js';
+  import { queuedCaption, shouldShowActivity, shouldShowSendNow, trackQueueSeen } from './pending-message.js';
   import { keyboardInset } from './viewport.js';
   import TopBar from './components/TopBar.svelte';
   import { activityStatus } from './activity-status.js';
@@ -131,6 +132,15 @@
   let profileOpen = false, downloadsOpen = false, instructionsDirty = false;
   let notesOpen = false, notesRevision = 0, notesCount = 0;
   let interruptStates = {};
+  // Тихая отправка: очередь видна на самом сообщении, fallback-кнопка — только при проблеме.
+  // nowMs тикает для порога долгого ожидания, queueFirstSeen помнит первое появление каждого id.
+  // Все присвоения очереди идут через setQueue, чтобы штампы не расползались по коду.
+  let nowMs = Date.now(), queueFirstSeen = new Map();
+  function setQueue(items) {
+    queue = Array.isArray(items) ? items : [];
+    const next = trackQueueSeen(queueFirstSeen, queue, Date.now());
+    if (next !== queueFirstSeen) queueFirstSeen = next;
+  }
   const delivery = createDelivery({request: value => connection.request(value), fetch: (...args) => fetch(...args), onChange: items => { preparing = items; }, revoke: url => URL.revokeObjectURL(url)});
   const interruptFeedback = createInterruptFeedback({onChange: (id, state) => { interruptStates = {...interruptStates, [id]:state}; }});
   const updates = createUpdateChecker({
@@ -172,7 +182,7 @@
         const page = await connection.request({type:'read', id, before: history[0]?.cursor}, 15000);
         if (token !== historyToken || selected !== id) return;
         history = mergeOlder(history, page.messages);
-        queue = page.queue;
+        setQueue(page.queue);
         historyHasMore = page.hasMore;
         historyLoaded = true;
         historyRetryAttempt = 0;
@@ -181,14 +191,14 @@
         // показываются последние ~10, остальные — запас для быстрой прокрутки вверх.
         const first = await connection.request({type:'read', id}, 15000);
         if (token !== historyToken || selected !== id) return;
-        queue = first.queue;
+        setQueue(first.queue);
         let messages = first.messages.slice();
         let hasMore = first.hasMore;
         if (needsInitialTopup(messages, hasMore, HISTORY_INITIAL_LIMIT) && messages.length) {
           const second = await connection.request({type:'read', id, before: messages[0].cursor}, 15000);
           if (token !== historyToken || selected !== id) return;
           messages = mergeOlder(messages, second.messages);
-          queue = second.queue ?? queue;
+          setQueue(second.queue ?? queue);
           hasMore = second.hasMore;
         }
         history = messages;
@@ -201,7 +211,7 @@
         const page = await connection.request({type:'read', id}, 15000);
         if (token !== historyToken || selected !== id) return;
         const merged = mergeHistory(history, page.messages, lastCursor);
-        history = merged.messages; queue = page.queue;
+        history = merged.messages; setQueue(page.queue);
         if (!merged.overlap) { historyHasMore = page.hasMore; historyVersion++; }
         historyLoaded = true;
         historyRetryAttempt = 0;
@@ -226,7 +236,7 @@
     if (selected !== id) {
       if (selected !== null) drafts.save(selected);
       clearHistoryRetry(); historyRetryAttempt = 0;
-      history = []; queue = []; message = '';
+      history = []; setQueue([]); message = '';
       selected = id;
       drafts.select(id);
     }
@@ -262,7 +272,7 @@
     if (msg.type === 'speech_error') { speech.stop(); error = msg.message; }
     if (msg.type === 'sessions') { sessions = msg.sessions; if (openSecretaryPending && sessions.some(s => s.secretary)) openSecretary(); if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select((sessions.find(s => s.secretary) ?? sessions[0]).id); } }
     if (msg.type === 'message' && msg.sessionId === selected && !history.some(m => m.cursor === msg.message.cursor)) history = [...history, msg.message];
-    if (msg.type === 'queue' && msg.sessionId === selected) queue = msg.items;
+    if (msg.type === 'queue' && msg.sessionId === selected) setQueue(msg.items);
     if (msg.type === 'interrupt_result') interruptFeedback.result(msg.sessionId, msg.requestId, msg.outcome);
     if (msg.type === 'error') error = msg.message;
   }
@@ -366,12 +376,17 @@
     return grouped;
   }
   // Queued messages are not accepted by the agent yet, so they come after history.
+  // Оптимистично: очередь — то же своё сообщение, статус тихо на нём самом.
+  // Общий индикатор хода прячем, пока есть неотправленное: иначе «В очереди» + «Пишет ответ…» спорят.
   $: groupedHistory = groupSteps(insertVoices(mergeSwitches(mergeApprovals(history)).map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})), voiceMessages.filter(item => item.id === selected)), current?.status === 'running');
+  $: preparingHere = preparing.filter(item => item.sessionId === selected);
+  $: queueHere = queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:[...item.images, ...(item.files || [])], urgent:item.urgent, sendNow:shouldShowSendNow({urgent:item.urgent, firstSeen:queueFirstSeen.get(item.id), now:nowMs, sessionStatus:current?.status}), caption:queuedCaption(item.urgent), key:`${selected}:queue:${item.id}`}));
+  $: pendingHere = queueHere.length + preparingHere.length;
   $: messages = [
     ...groupedHistory,
-    ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:[...item.images, ...(item.files || [])], urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
-    ...preparing.filter(item => item.sessionId === selected).map(item => ({...item, kind:'preparing', key:`preparing:${item.id}`})),
-    ...(current?.status === 'running' && !groupedHistory.at(-1)?.live ? [{kind:'activity', text:activityStatus('running', history), key:`${selected}:activity`}] : []),
+    ...queueHere,
+    ...preparingHere.map(item => ({...item, kind:'preparing', key:`preparing:${item.id}`})),
+    ...(shouldShowActivity({sessionStatus:current?.status, live:!!groupedHistory.at(-1)?.live, pendingCount:pendingHere}) ? [{kind:'activity', text:activityStatus('running', history), key:`${selected}:activity`}] : []),
   ];
   const userKinds = ['user', 'voice', 'queued', 'preparing', 'cancelled', 'uncertain'];
   $: turn = messages.slice(Math.max(0, messages.findLastIndex(m => userKinds.includes(m.kind))));
@@ -394,6 +409,8 @@
     }
     const reconnect = () => { if (document.visibilityState === 'visible') { connection.connect(); updates.check(); } };
     const updateTimer = setInterval(() => { if (document.visibilityState === 'visible') updates.check(); }, 5000);
+    // Тихий тик для порога fallback-кнопки зависшей очереди.
+    const pendingTimer = setInterval(() => { if (queue.length) nowMs = Date.now(); }, 5000);
     window.addEventListener('online', reconnect);
     document.addEventListener('visibilitychange', reconnect);
     const vv = window.visualViewport;
@@ -403,7 +420,7 @@
     document.addEventListener('focusin', update);
     document.addEventListener('focusout', update);
     update();
-    return () => { shareListener?.remove(); clearInterval(updateTimer); clearHistoryRetry(); updates.stop(); interruptFeedback.dispose(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); window.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
+    return () => { shareListener?.remove(); clearInterval(updateTimer); clearInterval(pendingTimer); clearHistoryRetry(); updates.stop(); interruptFeedback.dispose(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); window.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
   });
 </script>
 
