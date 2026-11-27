@@ -166,7 +166,9 @@ console.log(`Secretary: ${server.url}`);
 function handleRequest(request: Request, server: any) {
     const url = new URL(request.url);
     if (url.pathname === '/pair' && request.method === 'POST') {
-      if (!sameOrigin(request, url)) return new Response('Forbidden', { status: 403 });
+      // Без проверки Origin: credential здесь — одноразовый 10-минутный код + rate-limit,
+      // а кука HttpOnly/Secure/SameSite=Strict всё равно остаётся в браузере жертвы.
+      // Проверка резала свежие входы из WebView приложения (чужой Origin → белый «Forbidden»).
       return request.formData().then(form => {
         const token = auth.pair(String(form.get('code') || ''), server.requestIP(request)?.address ?? 'unknown');
         if (!token) return new Response('Неверный или просроченный код.', { status: 401 });
