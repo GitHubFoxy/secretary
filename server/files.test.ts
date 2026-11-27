@@ -69,6 +69,12 @@ test('отдаёт сохранённый файл только по его uuid
     expect(served?.headers.get('content-disposition')).toBe('inline');
     expect(await served?.text()).toBe('JPG');
     expect((await fileResponse(page.id, 'page.html', false, root))?.headers.get('content-disposition')).toBe("attachment; filename*=UTF-8''page.html");
+    const preview = await fileResponse(page.id, 'page.html', false, root, true);
+    expect(preview?.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(preview?.headers.get('content-security-policy')).toContain('sandbox allow-scripts');
+    expect(preview?.headers.get('x-frame-options')).toBe('SAMEORIGIN');
+    expect(await fileResponse(photo.id, 'photo.jpg', false, root, true)).toBeNull();
+    expect(await fileResponse(page.id, 'page.html', true, root, true)).toBeNull();
     expect((await fileResponse(photo.id, 'photo.jpg', true, root))?.headers.get('content-disposition')).toBe("attachment; filename*=UTF-8''photo.jpg");
     expect(await fileResponse(photo.id, '..%2F..%2Fphoto.jpg', false, root)).toBeNull();
     expect(await fileResponse(photo.id, '..', false, root)).toBeNull();

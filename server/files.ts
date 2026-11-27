@@ -66,12 +66,16 @@ export function validateFiles(value: unknown, root = secretaryFolder): FileAttac
 
 // Картинки и видео открываются в браузере, остальное скачивается: загруженный HTML или SVG
 // не должен исполняться на адресе приложения, где есть вход.
-export async function fileResponse(id: string, encodedName: string, download = false, root = secretaryFolder): Promise<Response | null> {
+export async function fileResponse(id: string, encodedName: string, download = false, root = secretaryFolder, preview = false): Promise<Response | null> {
   let name: string;
   try { name = decodeURIComponent(encodedName); } catch { return null; }
   if (!fileIdPattern.test(id) || safeName(name) !== name) return null;
   const file = Bun.file(join(root, 'files', id, name));
   if (!(await file.exists())) return null;
+  if (preview) {
+    if (download || !/\.html$/i.test(name)) return null;
+    return new Response(file, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Content-Disposition': 'inline', 'Content-Security-Policy': "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'", 'X-Frame-Options': 'SAMEORIGIN', 'Cache-Control': 'no-store' } });
+  }
   const inline = !download && /^(image\/(?!svg)|video\/|audio\/)/.test(file.type);
   const disposition = inline ? 'inline' : `attachment; filename*=UTF-8''${encodeURIComponent(name)}`;
   return new Response(file, { headers: { 'Content-Type': file.type, 'Content-Disposition': disposition, 'X-Content-Type-Options': 'nosniff' } });

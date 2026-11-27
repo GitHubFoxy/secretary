@@ -18,22 +18,8 @@
   let viewed = $state(null);
   let stepsOpen = $state(false);
   let htmlFile = $state(null);
-  let htmlText = $state(null);
-  let htmlError = $state(false);
   const isHtml = file => /\.html$/i.test(file.name);
-  async function openHtml(file) {
-    htmlFile = file;
-    htmlText = null;
-    htmlError = false;
-    try {
-      const response = await fetch(fileUrl(file));
-      if (!response.ok) throw new Error('Failed to load');
-      const text = await response.text();
-      if (htmlFile?.id === file.id) htmlText = text;
-    } catch {
-      if (htmlFile?.id === file.id) htmlError = true;
-    }
-  }
+  function openHtml(file) { htmlFile = file; }
   const fileUrl = file => `/files/${file.id}/${encodeURIComponent(file.name)}`;
 
   function shown(images) {
@@ -209,8 +195,6 @@
       <span class="truncate">{htmlFile.name}</span>
       <button type="button" class="icon-btn" aria-label="Закрыть" onclick={() => htmlFile = null}><Icon name="close" /></button>
     </header>
-    {#if htmlError}<p class="p-4 text-red-400">Не удалось загрузить файл</p>
-    {:else if htmlText === null}<p class="p-4 text-neutral-400">Загрузка…</p>
-    {:else}<iframe title={htmlFile.name} sandbox="allow-scripts" srcdoc={htmlText} class="min-h-0 w-full flex-1 bg-white"></iframe>{/if}
+    <iframe title={htmlFile.name} sandbox="allow-scripts" src={fileUrl(htmlFile) + '?preview'} class="min-h-0 w-full flex-1 bg-white"></iframe>
   </div>
 {/if}

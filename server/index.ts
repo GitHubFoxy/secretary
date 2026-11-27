@@ -121,8 +121,8 @@ const server = Bun.serve({
   async fetch(request, server) {
     const response = await handleRequest(request, server);
     if (response) {
-      response.headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'");
-      response.headers.set('X-Frame-Options', 'DENY');
+      if (!response.headers.has('Content-Security-Policy')) response.headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'");
+      if (!response.headers.has('X-Frame-Options')) response.headers.set('X-Frame-Options', 'DENY');
       response.headers.set('Referrer-Policy', 'no-referrer');
       response.headers.set('X-Content-Type-Options', 'nosniff');
     }
@@ -174,7 +174,7 @@ function handleRequest(request: Request, server: any) {
       return saveFile(request).then(file => Response.json(file), error => new Response(String(error), {status:400}));
     const stored = url.pathname.match(/^\/files\/([^/]+)\/([^/]+)$/);
     if (stored && request.method === 'GET')
-      return fileResponse(stored[1], stored[2], url.searchParams.has('download')).then(response => response ?? new Response('Not found', {status:404}));
+      return fileResponse(stored[1], stored[2], url.searchParams.has('download'), undefined, url.searchParams.has('preview')).then(response => response ?? new Response('Not found', {status:404}));
     if (url.pathname === '/voice/turn' && request.method === 'POST') {
       const size = Number(request.headers.get('content-length'));
       if (!size || size > 20 * 1024 * 1024) return new Response('Запись слишком большая', {status:413});
