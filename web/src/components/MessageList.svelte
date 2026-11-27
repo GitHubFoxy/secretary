@@ -18,17 +18,19 @@
 
   async function loadOlder() {
     if (!connected || !historyHasMore || historyLoading || historyLoadingOlder || loading) return;
-    const items = scroller.querySelectorAll('[data-message]');
+    const list = scroller;
+    const items = list.querySelectorAll('[data-message]');
     loading = true;
     pinned = false;
-    const anchor = [...items].find(item => item.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top);
+    const anchor = [...items].find(item => item.getBoundingClientRect().bottom > list.getBoundingClientRect().top);
     const offset = anchor?.offsetTop;
-    const height = scroller.scrollHeight;
+    const height = list.scrollHeight;
     try {
       await onloadOlder();
       await tick();
-      if (anchor?.isConnected) scroller.scrollTop += anchor.offsetTop - offset;
-      else scroller.scrollTop += scroller.scrollHeight - height;
+      if (scroller !== list || !list.isConnected) return;
+      if (anchor?.isConnected) list.scrollTop += anchor.offsetTop - offset;
+      else list.scrollTop += list.scrollHeight - height;
     } finally { loading = false; }
   }
 

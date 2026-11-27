@@ -165,4 +165,69 @@ let unique = await ev(
 if (new Set(unique).size !== unique.length)
   throw Error("duplicates after reconnect");
 console.log("PASS reconnect without duplicates");
+
+await reset("ok");
+await until(`document.body.innerText.includes('synthetic 60')`, "switch setup");
+await ev(
+  `window.testErrors=[]; window.addEventListener('error', e => window.testErrors.push(String(e.error || e.message))); window.addEventListener('unhandledrejection', e => window.testErrors.push(String(e.reason)))`,
+);
+await mode("hold");
+await click();
+await until(
+  `document.body.innerText.includes('Загрузка…')`,
+  "older request held before switch",
+);
+await ev(
+  `window.oldScroller=document.querySelector('.overscroll-contain'); document.querySelector('[aria-label="Список сессий"]').click()`,
+);
+await ev(
+  `[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Other')).click()`,
+);
+await until(
+  `document.body.innerText.includes('other session') && !window.oldScroller.isConnected`,
+  "switch unmounts old list",
+);
+await mode("release");
+await Bun.sleep(300);
+if (await ev(`window.testErrors.length`))
+  throw Error(
+    "browser error after unmount: " +
+      JSON.stringify(await ev(`window.testErrors`)),
+  );
+if (await ev(`document.body.innerText.includes('synthetic 21')`))
+  throw Error("old page leaked into other session");
+console.log("PASS delayed reply after unmount");
+
+await ev(`document.querySelector('[aria-label="Список сессий"]').click()`);
+await ev(
+  `[...document.querySelectorAll('button')].find(b=>b.textContent.includes('History')).click()`,
+);
+await until(
+  `document.body.innerText.includes('synthetic 60')`,
+  "error isolation setup",
+);
+await mode("fail");
+await click();
+await until(
+  `document.body.innerText.includes('synthetic failure')`,
+  "older error before reconnect",
+);
+await mode("disconnect");
+await mode("ok");
+await Bun.sleep(1800);
+await until(
+  `document.body.innerText.includes('synthetic 60') && !document.body.innerText.includes('Загрузка сообщений')`,
+  "reconnected after older error",
+);
+await ev(`document.querySelector('[aria-label="Список сессий"]').click()`);
+await ev(
+  `[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Other')).click()`,
+);
+await until(
+  `document.body.innerText.includes('other session')`,
+  "other session after reconnect",
+);
+if (await ev(`document.body.innerText.includes('synthetic failure')`))
+  throw Error("older error leaked into other session");
+console.log("PASS older error does not leak after reconnect");
 ws.close();

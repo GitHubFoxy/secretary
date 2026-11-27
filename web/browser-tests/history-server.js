@@ -15,6 +15,7 @@ const sessions = [
     harness: "codex",
     model: "test",
   },
+  { id: 2, name: "Other", status: "idle", harness: "codex", model: "test" },
 ];
 Bun.serve({
   port,
@@ -69,6 +70,20 @@ Bun.serve({
   },
 });
 function reply(w, c) {
+  if (c.id === 2) {
+    w.send(
+      JSON.stringify({
+        type: "reply",
+        requestId: c.requestId,
+        messages: [
+          { kind: "user", text: "other session", cursor: 100, images: [] },
+        ],
+        hasMore: false,
+        queue: [],
+      }),
+    );
+    return;
+  }
   let end = c.before ? c.before - 1 : 60,
     start = Math.max(1, end - 19);
   let messages = Array.from({ length: end - start + 1 }, (_, i) => ({
