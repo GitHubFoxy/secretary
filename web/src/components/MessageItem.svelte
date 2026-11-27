@@ -51,7 +51,7 @@
   <span class="inline-flex items-center gap-1 whitespace-nowrap {info.accent}"><Icon name={a.harness} class="size-3.5" />{modelLabel(a.model)}{#if a.reasoning}<span class="text-neutral-500"> · {a.reasoning}</span>{/if}</span>
 {/snippet}
 
-<div data-message>
+<div data-message class="min-w-0">
   {#if ['skill', 'secret', 'sudo'].includes(m.kind)}
     <ApprovalCard message={m} {connected} {ondecide} />  {:else if m.kind === 'activity'}
     <p class="truncate text-sm text-neutral-400">{m.text}</p>
@@ -61,7 +61,7 @@
       {#if m.thinking}<p class="mt-1 line-clamp-3 whitespace-pre-wrap text-neutral-500">{m.thinking}</p>{/if}
       {#if m.steps.length}
         {@const last = m.steps[m.steps.length - 1]}
-        <button type="button" class="mt-1 text-left" aria-expanded={stepsOpen} onclick={() => stepsOpen = !stepsOpen}>{stepsOpen ? '▾' : '▸'} {m.steps.length} шагов · {last.tool}{last.summary ? `: ${last.summary}` : ''}</button>
+        <button type="button" class="mt-1 max-w-full break-words text-left" aria-expanded={stepsOpen} onclick={() => stepsOpen = !stepsOpen}>{stepsOpen ? '▾' : '▸'} {m.steps.length} шагов · {last.tool}{last.summary ? `: ${last.summary}` : ''}</button>
         {#if stepsOpen}<ul class="mt-1 space-y-1 pl-4">{#each m.steps as step}<li class="break-words">{step.tool}{step.summary ? `: ${step.summary}` : ''}</li>{/each}</ul>{/if}
       {/if}
     </div>
