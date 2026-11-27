@@ -211,6 +211,6 @@
     </header>
     {#if htmlError}<p class="p-4 text-red-400">Не удалось загрузить файл</p>
     {:else if htmlText === null}<p class="p-4 text-neutral-400">Загрузка…</p>
-    {:else}<iframe title={htmlFile.name} sandbox srcdoc={htmlText} class="min-h-0 w-full flex-1 bg-white"></iframe>{/if}
+    {:else}<iframe title={htmlFile.name} sandbox="allow-scripts" srcdoc={htmlText} class="min-h-0 w-full flex-1 bg-white"></iframe>{/if}
   </div>
 {/if}
