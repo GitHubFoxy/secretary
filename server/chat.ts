@@ -82,12 +82,14 @@ export function chatMessage(event: any, time = ''): ChatMessage | null {
       ...(valid(metadata?.pre_tokens) ? { beforeTokens: metadata.pre_tokens } : {}),
       ...(valid(metadata?.post_tokens) ? { afterTokens: metadata.post_tokens } : {}) };
   }
-  if (event?.type === 'skill_request') return { kind: 'skill', id: event.id, name: event.name, reason: event.reason, before: event.before, content: event.content };
-  if (event?.type === 'skill_result') return { kind: 'skill', id: event.id, status: event.status };
-  if (event?.type === 'secret_request') return { kind: 'secret', id: event.id, name: event.name, reason: event.reason };
-  if (event?.type === 'secret_result') return { kind: 'secret', id: event.id, status: event.status };
-  if (event?.type === 'sudo_request') return { kind: 'sudo', id: event.id, command: event.command, reason: event.reason };
-  if (event?.type === 'sudo_result') return { kind: 'sudo', id: event.id, status: event.status };
+  const approval = event?.type?.match?.(/^(skill|secret|sudo)_(request|result)$/);
+  if (approval) {
+    const kind = approval[1] as 'skill' | 'secret' | 'sudo';
+    if (approval[2] === 'result') return { kind, id: event.id, status: event.status };
+    if (kind === 'skill') return { kind, id: event.id, name: event.name, reason: event.reason, before: event.before, content: event.content };
+    if (kind === 'secret') return { kind, id: event.id, name: event.name, reason: event.reason };
+    return { kind, id: event.id, command: event.command, reason: event.reason };
+  }
   if (event?.type === 'assistant' && Array.isArray(event.message?.content)) {
     const block = event.message.content.find((b: any) => b.type === 'tool_use' || b.type === 'thinking' || b.type === 'text');
     if (block?.type === 'text') return { kind: 'writing' };
