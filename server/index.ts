@@ -11,7 +11,8 @@ import { port, secretaryFolder } from './config';
 import { fileResponse, saveFile } from './files';
 import { migrateDatabase, openDatabase } from './database';
 import { serveMcp } from './mcp';
-import { Memory } from './memory';
+import { Memory, memorySettings } from './memory';
+import { skillSettings } from './skills';
 import { ExternalMcp } from './external-mcp';
 import { getDraft, saveDraft } from './drafts';
 import { listNotes, saveNote, deleteNote } from './notes';
@@ -206,29 +207,8 @@ function handleRequest(request: Request, server: any) {
       if (request.method === 'PUT') return request.text().then(setTtsEngine).then(() => new Response(null, {status:204}), error => new Response(String(error), {status:400}));
       return new Response(null, {status:405});
     }
-    if (url.pathname === '/settings/skills') {
-      try {
-        const name = url.searchParams.get('name');
-        if (request.method === 'GET') return Response.json(name ? sessions.approvals.skills.details(name) : sessions.approvals.skills.list().map(n => sessions.approvals.skills.details(n)));
-        if (!name) throw new Error('Укажите имя skill');
-        if (request.method === 'DELETE') { sessions.approvals.skills.delete(name); return new Response(null, {status: 204}); }
-        if (request.method === 'POST') return request.json().then(data => { sessions.approvals.skills.restore(name, data.version); return new Response(null, {status: 204}); }).catch(error => new Response(String(error), {status: 400}));
-        return new Response(null, {status: 405});
-      } catch (error) { return new Response(String(error), {status: 400}); }
-    }
-    if (url.pathname === '/settings/memory') {
-      try {
-        const name = url.searchParams.get('name');
-        if (request.method === 'GET') return Response.json(name === null ? memory.list() : memory.read(name));
-        if (request.method === 'PUT' || request.method === 'DELETE') return request.json().then(data => {
-          if (!name) throw new Error('Укажите имя файла');
-          if (request.method === 'PUT') return Response.json(memory.write(name, data.text, data.version));
-          memory.delete(name, data.version);
-          return new Response(null, {status: 204});
-        }).catch(error => new Response(String(error), {status: 400}));
-        return new Response(null, {status: 405});
-      } catch (error) { return new Response(String(error), {status: 400}); }
-    }
+    if (url.pathname === '/settings/skills') return skillSettings(request, url, sessions.approvals.skills);
+    if (url.pathname === '/settings/memory') return memorySettings(request, url, memory);
     const role = url.pathname.match(/^\/settings\/agents\/(secretary|specialist)$/)?.[1] as Role | undefined;
     if (role) {
       const file = Bun.file(instructionsFile(secretaryFolder, role));
