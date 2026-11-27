@@ -442,3 +442,11 @@ test('перезапуск сбрасывает opencode-сессии на sessi
   expect((db.query('SELECT harness_session_id AS h FROM sessions WHERE id = ?').get(opencode.id) as { h: unknown }).h).toBeNull();
   expect(restored.get(claude.id).info.harness_session_id).toBe('claude-thread');
 });
+
+test('первая сессия без claude создаётся на первом доступном harness', () => {
+  const db = openDatabase(':memory:');
+  const noop: Turn = async () => true;
+  const sessions = new Sessions(db, { turns: { opencode: noop }, checkModel: async () => {}, onEvent() {}, onChange() {} });
+  sessions.load('/home/u/.secretary');
+  expect(sessions.get(1).info).toMatchObject({ harness: 'opencode', model: 'pag/muse-spark-1.3-contributor', reasoning: 'high' });
+});

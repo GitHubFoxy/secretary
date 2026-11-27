@@ -43,8 +43,12 @@ let speechEventSeen = false;
 const speech = new Speech(message => speechTarget?.(message));
 function stopSpeech() { speech.stop(); speechTarget?.({type:'speech_cancel'}); speechTarget = undefined; speechOwner = undefined; }
 const publishSessions = () => publish({ type: 'sessions', sessions: sessions.list() });
+const allTurns = { claude: claudeTurn, codex: codexTurn, opencode: opencodeTurn };
+// Hosted: SECRETARY_HARNESSES=opencode оставляет только перечисленные (через запятую), по умолчанию — все.
+const onlyHarnesses = (process.env.SECRETARY_HARNESSES ?? '').split(',').map(s => s.trim()).filter(Boolean);
+const turns = Object.fromEntries(Object.entries(allTurns).filter(([name]) => !onlyHarnesses.length || onlyHarnesses.includes(name)));
 const sessions = new Sessions(db, {
-  turns: { claude: claudeTurn, codex: codexTurn, opencode: opencodeTurn },
+  turns,
   checkModel: checkReasoning,
   onChange: publishSessions,
   // The browser gets chat messages, the queue and interrupt results; other raw events stay in SQLite.
@@ -189,8 +193,13 @@ function handleRequest(request: Request, server: any) {
       if (!size || size > 20 * 1024 * 1024) return new Response('Запись слишком большая', {status: 413});
       return request.arrayBuffer().then(bytes => transcribe(new Uint8Array(bytes))).then(text => Response.json({text}), error => new Response(error.message, {status: 500}));
     }
-    if (url.pathname === '/model-details')
-      return Promise.resolve().then(() => modelDetails(url.searchParams.get('harness') || '', true)).then(result => Response.json(result), error => new Response(String(error), { status: 500 }));
+    if (url.pathname === '/model-details') {
+      const harness = url.searchParams.get('harness') || '';
+      if (!sessions.harnesses.includes(harness)) return new Response('Harness недоступен на этом Host', { status: 400 });
+      return Promise.resolve().then(() => modelDetails(harness, true)).then(result => Response.json(result), error => new Response(String(error), { status: 500 }));
+    }
+    if (url.pathname === '/harnesses')
+      return Response.json({ harnesses: sessions.harnesses });
     if (url.pathname === '/codex/limits')
       return codexRateLimits().then(limits => Response.json(limits), error => new Response(error.message, { status: 500 }));
     if (url.pathname === '/opencode/limits')

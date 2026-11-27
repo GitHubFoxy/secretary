@@ -4,6 +4,15 @@
   let { harness = $bindable(), model = $bindable(), reasoning = $bindable(), current = null } = $props();
 
   let details = $state([]);
+  // Hosted может отключать harness через SECRETARY_HARNESSES: карточки лишних прячем.
+  let available = $state(harnesses.map(h => h.value));
+  $effect(() => {
+    fetch('/harnesses').then(r => r.json()).then(
+      result => { if (Array.isArray(result.harnesses) && result.harnesses.length) available = result.harnesses; },
+      () => {},
+    );
+  });
+  const visible = $derived(harnesses.filter(h => available.includes(h.value)));
   // Сессия может хранить псевдоним Claude Code («opus»): он остаётся значением своей модели в списке.
   const matches = m => m.id === model || m.aliases?.includes(model);
   let levels = $derived(details.find(matches)?.supportedReasoningEfforts.map(e => e.reasoningEffort) ?? []);
@@ -37,7 +46,7 @@
 
 <div class="flex flex-col gap-3">
   <div role="group" aria-label="Агент" class="grid grid-cols-2 gap-2">
-    {#each harnesses as item (item.value)}
+    {#each visible as item (item.value)}
       {@const on = harness === item.value}
       <button
         type="button"

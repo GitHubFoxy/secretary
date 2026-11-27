@@ -45,7 +45,13 @@ export class Sessions {
     const emit = (id: number, event: object) => this.get(id).emit(event);
     this.approvals = { skills: new Skills(secretaryFolder, emit), secrets: new Secrets(secretaryFolder, emit), sudo: new Sudo(emit) };
     const rows = this.db.query('SELECT * FROM sessions ORDER BY id').all() as SessionRow[];
-    if (!rows.length) this.insert({ harness: 'claude', model: 'opus', reasoning: null, folder: secretaryFolder });
+    if (!rows.length) {
+      // Первый запуск: дефолт зависит от доступных harness (на hosted с SECRETARY_HARNESSES=opencode это OpenCode).
+      const harness = this.harnesses.includes('claude') ? 'claude' : this.harnesses[0];
+      this.insert(harness === 'opencode'
+        ? { harness, model: 'pag/muse-spark-1.3-contributor', reasoning: 'high', folder: secretaryFolder }
+        : { harness, model: 'opus', reasoning: null, folder: secretaryFolder });
+    }
     else for (const row of rows) {
       // OpenCode держит MCP-серверы в своей сессии: неудачное рукопожатие (рестарт застал resume)
       // навсегда выкидывает инструменты secretary из её каталога, а resume их не возвращает —
