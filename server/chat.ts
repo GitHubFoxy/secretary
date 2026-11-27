@@ -28,6 +28,7 @@ export function reportText(child: Child, answer: string) {
 
 export function agentAnswer(event: any): string | null {
   if (event?.type === 'result' && typeof event.result === 'string') return event.result;
+  if (event?.type === 'opencode_result' && typeof event.text === 'string') return event.text;
   const item = event?.method === 'item/completed' ? event.params?.item : null;
   return item?.type === 'agentMessage' && typeof item.text === 'string' ? item.text : null;
 }
@@ -37,13 +38,19 @@ export function visibleAnswer(text: string | null | undefined): text is string {
 }
 
 export function speechAnswer(event: any) {
-  return event?.type === 'assistant'
+  return event?.type === 'opencode_result' && typeof event.text === 'string' ? event.text
+    : event?.type === 'assistant'
     ? (event.message?.content || []).filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n')
     : event?.method === 'item/completed' && event.params?.item?.type === 'agentMessage' ? event.params.item.text : '';
 }
 
 // The harness reports reset timestamps in seconds or in its local time in the error text.
 export function usageLimit(event: any): { resetsAt?: number } | null {
+  const retry = event?.params?.update?._meta?.['opencode/retry'];
+  if (retry && /rate.?limit/i.test(`${retry.error?.type ?? ''} ${retry.error?.message ?? ''}`)) {
+    const reset = Date.parse(retry.nextRetryAt);
+    return Number.isFinite(reset) ? { resetsAt: reset } : {};
+  }
   const error = event?.method === 'turn/completed' ? event.params?.turn?.error
     : event?.method === 'error' && !event.params?.willRetry ? event.params?.error : null;
   const claude = event?.type === 'result' && event.is_error && typeof event.result === 'string' ? event.result : '';
@@ -83,8 +90,11 @@ export function usageLimitText(resetsAt?: number) {
 export function chatMessage(event: any, time = ''): ChatMessage | null {
   if (usageLimit(event)) return null;
   if (event?.type === 'usage_limit') return { kind: 'error', text: usageLimitText(event.resetsAt) };
+  if (event?.type === 'opencode_result' && event.stopReason !== 'end_turn') return null;
   if ((event?.type === 'system' && event.subtype === 'compact_boundary') ||
-      (event?.method === 'item/completed' && event.params?.item?.type === 'contextCompaction')) {
+      (event?.method === 'item/completed' && event.params?.item?.type === 'contextCompaction') ||
+      (event?.params?.update?.sessionUpdate === 'compaction_update' && ['completed', 'failed'].includes(event.params.update.status)) ||
+      (event?.params?.update?.sessionUpdate === 'session_info_update' && ['completed', 'failed'].includes(event.params.update._meta?.['opencode/compaction']?.status))) {
     const metadata = event.compact_metadata;
     const valid = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
     return { kind: 'compaction', time,
@@ -121,6 +131,14 @@ export function chatMessage(event: any, time = ''): ChatMessage | null {
   }
   if (event?.method === 'item/completed' && item?.type === 'reasoning' && Array.isArray(item.summary))
     return { kind: 'thinking', text: item.summary.join('\n').slice(0, 2000) };
+  const sessionUpdate = event?.params?.update?.sessionUpdate;
+  const content = event?.params?.update?.content;
+  if (sessionUpdate === 'agent_message_chunk') return { kind: 'writing' };
+  if (sessionUpdate === 'agent_thought_chunk' && typeof content?.text === 'string') return { kind: 'thinking', text: content.text.slice(0, 2000) };
+  if (sessionUpdate === 'tool_call') {
+    const raw = event.params.update.rawInput ?? {};
+    return { kind: 'step', tool: String(event.params.update.name ?? event.params.update.kind ?? 'tool'), summary: String(raw.command ?? raw.path ?? raw.file ?? '').slice(0, 120) };
+  }
   if (event?.type === 'result' && event.terminal_reason === 'aborted_streaming') return null;
   if (event?.type === 'result' && event.is_error) {
     const text = event.result === 'Not logged in · Please run /login'
