@@ -292,15 +292,23 @@ test('смена harness продолжает чат: событие в исто
   s.send('второй'); calls[1].start(); calls[1].answer('ok'); await tick();
   expect(calls[1].options.resumeId).toBe('thread-1');
   expect(calls[1].text).toBe('второй');
+  expect(calls[1].options.systemPrompt).toContain('Ты — Specialist');
 
   await sessions.configure(s.id, { harness: 'codex', model: 'gpt', reasoning: 'high' });
   await sessions.configure(s.id, { harness: 'codex', model: 'gpt', reasoning: 'high' });
   expect(s.events().filter(e => e.type === 'model_switch').map(e => `${e.from.model}→${e.to.model}`)).toEqual(['m→sonnet', 'sonnet→gpt']);
   s.send('третий');
   expect(calls[2].options.resumeId).toBeNull();
+  expect(calls[2].options.systemPrompt).toContain('Ты — Specialist');
   expect(calls[2].text).toContain('Пользователь: первый вопрос\n\nАгент: первый ответ\n\nПользователь: второй\n\nАгент: ok');
   expect(calls[2].text).not.toContain('Bash');
   expect(calls[2].text.endsWith('</history>\n\nтретий')).toBe(true);
+  calls[2].start(); calls[2].answer('ok'); await tick();
+  await sessions.configure(s.id, { harness: 'claude', model: 'sonnet', reasoning: null });
+  s.send('четвёртый');
+  expect(calls[3].options.resumeId).toBeNull();
+  expect(calls[3].options.systemPrompt).toContain('Ты — Specialist');
+  expect(calls[3].text).toContain('первый вопрос');
 });
 
 
