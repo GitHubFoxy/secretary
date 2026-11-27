@@ -23,9 +23,10 @@ test('простой объединяет пропуски, разовое ра�
   expect(queue.list()).toHaveLength(2);
   expect(queue.list()[0].text).toContain('[по расписанию]');
   const rows = schedules.list([1]);
+  expect(rows).toHaveLength(1);
   expect(rows[0].next_run).toBe(start + 3660000);
-  expect(rows[1].next_run).toBeNull();
+  expect(rows[0].text).toBe('повтор');
   schedules.remove(rows[0].id, [1]);
-  expect(schedules.list([1])).toHaveLength(1);
+  expect(schedules.list([1])).toHaveLength(0);
   db.close();
 });

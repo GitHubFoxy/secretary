@@ -401,7 +401,7 @@ test('лимит создаёт событие, отчёт родителю и �
   expect(schedules[0].text).toBe('Лимит подписки сбросился, продолжи работу с того места, где остановился');
   sessions.schedules.tick(at + 60_000);
   expect(calls[2].text).toContain('Лимит подписки сбросился, продолжи работу с того места, где остановился');
-  expect(sessions.schedules.list([child.id])[0].next_run).toBeNull();
+  expect(sessions.schedules.list([child.id])).toHaveLength(0);
 });
 
 test('лимит без времени назначает продолжение через 30 минут', async () => {

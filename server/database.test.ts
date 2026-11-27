@@ -60,7 +60,21 @@ test('индексирует старые и новые сообщения, ис
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
- test('читатель с открытой транзакцией не блокирует запись события', () => {
+ test('открытие базы удаляет мёртвые разовые расписания', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'secretary-dead-schedules-'));
+  const path = join(dir, 'db');
+  try {
+    let db = openDatabase(path);
+    db.query('INSERT INTO schedules (session_id, text, cron, next_run) VALUES (1, ?, NULL, NULL)').run('мёртвое');
+    db.query('INSERT INTO schedules (session_id, text, cron, next_run) VALUES (1, ?, NULL, ?)').run('живое', Date.now() + 60000);
+    db.close();
+    db = openDatabase(path);
+    expect(db.query('SELECT text FROM schedules ORDER BY text').all()).toEqual([{ text: 'живое' }]);
+    db.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('читатель с открытой транзакцией не блокирует запись события', () => {
   const dir = mkdtempSync(join(tmpdir(), 'secretary-wal-'));
   const path = join(dir, 'db');
   try {

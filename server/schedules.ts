@@ -60,7 +60,8 @@ export class Schedules {
       const session = this.sessions.get(row.session_id);
       const next = row.cron ? nextCron(row.cron, now) : null;
       session.queue.add(`[по расписанию] ${row.text}\nЗапланировано: ${new Date(row.next_run!).toISOString()}`, [], false, false, undefined, [], false, () => {
-        this.db.query('UPDATE schedules SET next_run = ?, last_run = ? WHERE id = ?').run(next, row.next_run, row.id);
+        if (row.cron) this.db.query('UPDATE schedules SET next_run = ?, last_run = ? WHERE id = ?').run(next, row.next_run, row.id);
+        else this.db.query('DELETE FROM schedules WHERE id = ?').run(row.id);
       });
       session.resumePending();
     }
