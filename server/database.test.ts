@@ -59,3 +59,18 @@ test('индексирует старые и новые сообщения, ис
     db.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+ test('читатель с открытой транзакцией не блокирует запись события', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'secretary-wal-'));
+  const path = join(dir, 'db');
+  try {
+    const db = openDatabase(path);
+    const reader = new Database(path, { readonly: true });
+    reader.run('BEGIN');
+    reader.query('SELECT * FROM events').all();
+    writeEvent(db, 1, { type: 'result', result: 'готово' });
+    reader.run('COMMIT');
+    expect(reader.query('SELECT COUNT(*) AS n FROM events').get()).toEqual({ n: 1 });
+    reader.close(); db.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

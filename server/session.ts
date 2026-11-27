@@ -123,6 +123,7 @@ export class Session {
     this.stopped = false;
     this.setStatus('running');
     let completed = false;
+    let failure: string | undefined;
     try {
       completed = await this.turns[this.row.harness]({
         ...this.turnContext(this.row), folder: this.row.folder, model: this.row.model, reasoning: this.row.reasoning,
@@ -133,7 +134,7 @@ export class Session {
       }, '/compact', []);
       if (!completed && !turn.interrupt.signal.aborted && !turn.stop.signal.aborted) this.emit({type:'error', message:'Не удалось сжать контекст'});
     } catch (error) { this.emit({type:'error', message:String(error)}); }
-    this.finish(turn, completed);
+    this.finish(turn, completed, failure);
   }
 
   // Files from the agent appear in the chat like its answer; the turn goes on.
@@ -194,6 +195,7 @@ export class Session {
     const text = history + items.map(item => [item.text, ...item.files.map(file => `Файл: ${filePath(file)} (${file.name}, ${file.size} байт)`)].filter(Boolean).join('\n')).filter(Boolean).join('\n\n');
     const images = items.flatMap(item => item.images);
     let completed = false;
+    let failure: string | undefined;
     try {
       completed = await this.turns[this.row.harness]({
         ...this.turnContext(this.row),
@@ -211,13 +213,16 @@ export class Session {
       if (!turn.accepted && !completed && !turn.interrupt.signal.aborted && !this.stopped) this.emit({ type: 'error', message: 'Агент завершился без подтверждения сообщения' });
     } catch (error) {
       // A turn interrupted for an urgent message restarts at once, so its error is not shown.
-      if (!turn.restarting) this.emit({ type: 'error', message: String(error) });
+      if (!turn.restarting) {
+        failure = error instanceof Error ? error.message : String(error);
+        this.emit({ type: 'error', message: String(error) });
+      }
     }
     if (speechTarget) this.publish({ type: 'speech_end', interrupted: !completed || turn.interrupt.signal.aborted || turn.stop.signal.aborted });
-    this.finish(turn, completed);
+    this.finish(turn, completed, failure);
   }
 
-  private finish(turn: ActiveTurn, completed: boolean) {
+  private finish(turn: ActiveTurn, completed: boolean, failure?: string) {
     // Messages of the turn that never reached history: cancelled if the harness never saw them, uncertain if it might have.
     if (turn.userInterrupt || (turn.dispatched && !turn.accepted)) this.queue.drop(turn.items, turn.dispatched ? 'delivery_uncertain' : 'cancelled');
     const requestId = turn.userInterrupt?.requestId;
@@ -233,6 +238,9 @@ export class Session {
     // The queue goes on once the turn's messages have left it, whichever way. A failure before dispatch keeps them queued,
     // so a broken launch does not loop; resumePending or the next message retries.
     if (!this.stopped && !turn.items.some(item => this.queue.has(item)) && this.queue.length) void this.next();
+    if (failure && !completed && !turn.limit && !turn.userInterrupt && !this.stopped && !turn.restarting) {
+      try { this.onComplete?.(`Ход упал: ${failure.split('\n')[0].slice(0, 500)}`); } catch (error) { console.error('Report failed', error); }
+    }
     if (completed && !turn.userInterrupt && turn.items.length) {
       try { this.onComplete?.(turn.answer); } catch (error) { console.error('Report failed', error); }
     }
