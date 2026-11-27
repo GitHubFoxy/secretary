@@ -44,6 +44,7 @@ export function openDatabase(path: string) {
   db.run(`CREATE TABLE IF NOT EXISTS schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, text TEXT NOT NULL, cron TEXT, next_run INTEGER, last_run INTEGER)`);
   db.run('DELETE FROM schedules WHERE cron IS NULL AND next_run IS NULL');
   db.run(`CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, session_id INTEGER NOT NULL, text TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+  addColumn('notes', "title TEXT NOT NULL DEFAULT ''");
   db.run(`CREATE TABLE IF NOT EXISTS drafts (session_id INTEGER PRIMARY KEY, text TEXT NOT NULL, updated_at TEXT NOT NULL)`);
   prepareSearch(db);
   return db;

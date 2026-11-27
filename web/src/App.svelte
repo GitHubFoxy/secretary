@@ -6,6 +6,7 @@
   import { createDrafts } from './drafts.js';
   import { createCamera } from './camera.js';
   import { mergeHistory, insertVoices, mergeApprovals } from './history.js';
+  import { HISTORY_INITIAL_LIMIT, retryDelay, mergeOlder, needsInitialTopup } from './history-prefetch.js';
   import { createInterruptFeedback } from './interrupt-feedback.js';
   import { createUpdateChecker } from './updates.js';
   import { keyboardInset } from './viewport.js';
@@ -55,7 +56,9 @@
     voiceMode = true; voiceKey++;
   }
   if ((overlay || new URLSearchParams(location.search).has('secretary')) && !cached?.sessions?.find(s => s.id === cached.selected)?.secretary) cached = null;
-  let historyLoading = false, historyError = '', historyOlderError = '', historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyToken = 0;
+  let historyLoading = false, historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyToken = 0;
+  // Тихий автоповтор без кнопки: при ошибке read повторяем с растущей паузой, спиннер сверху остаётся видимым.
+  let historyRetryTimer = null, historyRetryAttempt = 0;
   let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', connected = false;
   if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }
   let voiceMessages = [], voiceModel = '', voiceStatus = '', videoInterval = '1', ttsEngine = '', speaking = false, playing = false, speechFinishedId = null;
@@ -149,34 +152,85 @@
   });
   // Commands whose only visible result is a broadcast (sessions, message) or an error.
   const command = value => connection.request(value).catch(err => { error = err.message; });
+  function clearHistoryRetry() { if (historyRetryTimer) { clearTimeout(historyRetryTimer); historyRetryTimer = null; } }
+  function scheduleHistoryRetry(id, older, sync) {
+    clearHistoryRetry();
+    const delay = retryDelay(historyRetryAttempt++);
+    historyRetryTimer = setTimeout(() => {
+      historyRetryTimer = null;
+      if (selected !== id) return;
+      if (older && !historyHasMore) { historyLoadingOlder = false; return; }
+      loadHistory(id, older, sync);
+    }, delay);
+  }
   async function loadHistory(id, older = false, sync = false) {
     const token = ++historyToken;
-    historyLoadingOlder = older;
-    historyLoading = !older;
-    if (older) historyOlderError = '';
-    if (!older) historyError = '';
+    if (older) historyLoadingOlder = true;
+    else historyLoading = true;
     try {
-      const lastCursor = sync ? history.at(-1)?.cursor : undefined;
-      const page = await connection.request({type:'read', id, before: older ? history[0]?.cursor : undefined}, 15000);
-      if (token !== historyToken) return;
-      const merged = older ? {messages: [...page.messages, ...history], overlap: true} : mergeHistory(history, page.messages, lastCursor);
-      history = merged.messages; queue = page.queue;
-      if (older) historyHasMore = page.hasMore;
-      else if (!sync || !merged.overlap) { historyHasMore = page.hasMore; historyVersion++; }
-      historyLoaded = true;
-    } catch (err) { if (token === historyToken && !err.disconnected) { if (older) historyOlderError = err.message || 'Не удалось загрузить сообщения'; else historyError = err.message || 'Не удалось загрузить сообщения'; } }
-    finally { if (token === historyToken) { historyLoadingOlder = false; historyLoading = false; } }
+      if (older) {
+        const page = await connection.request({type:'read', id, before: history[0]?.cursor}, 15000);
+        if (token !== historyToken || selected !== id) return;
+        history = mergeOlder(history, page.messages);
+        queue = page.queue;
+        historyHasMore = page.hasMore;
+        historyLoaded = true;
+        historyRetryAttempt = 0;
+      } else if (!sync || history.length === 0) {
+        // Открытие чата: грузим сразу окно 30 (две серверные страницы по 20 с дедупом),
+        // показываются последние ~10, остальные — запас для быстрой прокрутки вверх.
+        const first = await connection.request({type:'read', id}, 15000);
+        if (token !== historyToken || selected !== id) return;
+        queue = first.queue;
+        let messages = first.messages.slice();
+        let hasMore = first.hasMore;
+        if (needsInitialTopup(messages, hasMore, HISTORY_INITIAL_LIMIT) && messages.length) {
+          const second = await connection.request({type:'read', id, before: messages[0].cursor}, 15000);
+          if (token !== historyToken || selected !== id) return;
+          messages = mergeOlder(messages, second.messages);
+          queue = second.queue ?? queue;
+          hasMore = second.hasMore;
+        }
+        history = messages;
+        historyHasMore = hasMore;
+        historyLoaded = true;
+        historyVersion++;
+        historyRetryAttempt = 0;
+      } else {
+        const lastCursor = history.at(-1)?.cursor;
+        const page = await connection.request({type:'read', id}, 15000);
+        if (token !== historyToken || selected !== id) return;
+        const merged = mergeHistory(history, page.messages, lastCursor);
+        history = merged.messages; queue = page.queue;
+        if (!merged.overlap) { historyHasMore = page.hasMore; historyVersion++; }
+        historyLoaded = true;
+        historyRetryAttempt = 0;
+      }
+    } catch (err) {
+      if (token !== historyToken || selected !== id) return;
+      // Офлайн/разрыв: молча ждём переподключения (onOpen позовёт sync-загрузку), лишних повторов нет.
+      if (err.disconnected) return;
+      scheduleHistoryRetry(id, older, sync);
+    }
+    finally {
+      // Во время паузы автоповтора спиннер остаётся: догрузка выглядит как обычная фоновая подгрузка.
+      if (token === historyToken && !historyRetryTimer) {
+        if (older) historyLoadingOlder = false;
+        else historyLoading = false;
+      }
+    }
   }
   const drafts = createDrafts({request: value => connection.request(value), selected: () => selected, setText: text => { message = text; }, onError: value => { error = value; }});
   const scheduleDraft = drafts.schedule;
   function select(id) {
     if (selected !== id) {
       if (selected !== null) drafts.save(selected);
+      clearHistoryRetry(); historyRetryAttempt = 0;
       history = []; queue = []; message = '';
       selected = id;
       drafts.select(id);
     }
-    historyLoaded = false; historyHasMore = false; historyOlderError = ''; drawerOpen = false; loadHistory(id);
+    historyLoaded = false; historyHasMore = false; historyLoading = false; historyLoadingOlder = false; historyRetryAttempt = 0; drawerOpen = false; loadHistory(id);
   }
   let openSecretaryPending = false;
   function openSecretary() {
@@ -195,7 +249,7 @@
       } catch {}
     }
     drafts.receive(msg, document.activeElement?.id === 'message');
-    if (msg.type === 'notesChanged' && msg.sessionId === selected) notesRevision++;
+    if (msg.type === 'notesChanged' && (msg.sessionId === selected || current?.secretary)) notesRevision++;
     if (msg.type === 'speech_start') speech.start();
     if (msg.type === 'speech_event' && voiceTimings.has(msg.voiceTimingId)) voiceTimings.get(msg.voiceTimingId).event ??= performance.now();
     if (msg.type === 'speech_audio' && speech.audio(msg.data, msg.rate)) {
@@ -326,7 +380,7 @@
   const userKinds = ['user', 'voice', 'queued', 'preparing', 'cancelled', 'uncertain'];
   $: turn = messages.slice(Math.max(0, messages.findLastIndex(m => userKinds.includes(m.kind))));
   $: if (historyLoaded && selected !== null) {
-    try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-20).map(m => ({...m, images:m.images?.filter(image => !image.video || image.video.time === 0)})), hasMore:historyHasMore || history.length > 20})); } catch { localStorage.removeItem('last-chat'); }
+    try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-30).map(m => ({...m, images:m.images?.filter(image => !image.video || image.video.time === 0)})), hasMore:historyHasMore || history.length > 30})); } catch { localStorage.removeItem('last-chat'); }
   }
   $: current = sessions.find(s => s.id === selected);
   $: voiceProps = {turn, sessionId:selected, running:current?.status === 'running', processing:voiceMessages.some(item => item.id === selected && item.speech && !item.error), speaking:playing, speechFinishedId, connected, openedAt:voiceOpenedAt, onstart:() => { micPress(); recordStart(); }, onvoice:item => sendVoice({...item, speech:true}), onphoto:image => connection.request({type:'send', id:selected, text:'Снимок с камеры', images:[image]}), oncamera:camera.set, onscreenshot:overlayBridge?.screenshot ? async () => { const data = await overlayBridge.screenshot(); if (!data) throw new Error('Снимок экрана недоступен'); await connection.request({type:'send', id:selected, text:'Экран на момент нажатия Power', images:[{type:'image/jpeg', data}]}); } : undefined, onstopspeech:stopSpeech};
@@ -353,7 +407,7 @@
     document.addEventListener('focusin', update);
     document.addEventListener('focusout', update);
     update();
-    return () => { shareListener?.remove(); clearInterval(updateTimer); updates.stop(); interruptFeedback.dispose(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); window.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
+    return () => { shareListener?.remove(); clearInterval(updateTimer); clearHistoryRetry(); updates.stop(); interruptFeedback.dispose(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); window.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
   });
 </script>
 
@@ -396,7 +450,7 @@
       onsettings={openSettings}
     />
 
-    <Notes open={notesOpen} sessionId={selected} {connection} revision={notesRevision} oncount={count => notesCount = count} onclose={() => (notesOpen = false)} />
+    <Notes open={notesOpen} sessionId={selected} secretary={!!current?.secretary} {connection} revision={notesRevision} oncount={count => notesCount = count} onclose={() => (notesOpen = false)} />
 
     <Modal open={renameOpen} title="Переименовать чат" onclose={() => (renameOpen = false)}>
       <form class="flex flex-col gap-4" onsubmit={e => { e.preventDefault(); rename(); }}>
@@ -428,7 +482,7 @@
 
     <div bind:this={chatViewport} class="relative flex min-h-0 flex-1 flex-col">
       {#key historyVersion}
-        <MessageList ondecide={(kind, id, approved, password) => connection.request({type: `${kind}${approved ? 'Approve' : 'Reject'}`, [kind === 'skill' ? 'skillId' : 'sudoId']: id, ...(password ? {password} : {})})} {messages} {sessions} {historyLoaded} {historyLoading} {historyError} {historyOlderError} onretryHistory={() => loadHistory(selected, false, historyLoaded)} {connected} historyHasMore={historyHasMore} {historyLoadingOlder} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} oncancelVoice={item => voiceMessages = voiceMessages.filter(v => v.key !== item.key)} />
+        <MessageList ondecide={(kind, id, approved, password) => connection.request({type: `${kind}${approved ? 'Approve' : 'Reject'}`, [kind === 'skill' ? 'skillId' : 'sudoId']: id, ...(password ? {password} : {})})} {messages} {sessions} {historyLoaded} {historyLoading} {connected} historyHasMore={historyHasMore} {historyLoadingOlder} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} oncancelVoice={item => voiceMessages = voiceMessages.filter(v => v.key !== item.key)} />
       {/key}
 
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">

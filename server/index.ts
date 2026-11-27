@@ -16,7 +16,8 @@ import { Memory, memorySettings } from './memory';
 import { skillSettings } from './skills';
 import { ExternalMcp } from './external-mcp';
 import { getDraft, saveDraft } from './drafts';
-import { listNotes, saveNote, deleteNote } from './notes';
+import { SECRETARY_ID } from './session';
+import { listNotes, listAllNotes, saveNote, deleteNote } from './notes';
 import { checkReasoning, modelDetails } from './models';
 import { opencodeUsage } from './opencode-usage';
 import { ensurePersona, instructionsFile, setSpecialistModel, specialistModel, systemPrompts, type Role } from './persona';
@@ -90,8 +91,8 @@ const commands: Record<string, (cmd: any, send: (message: object) => void) => un
   sudoReject: cmd => sessions.approvals.sudo.reject(cmd.sudoId),
   draft: cmd => ({text: getDraft(db, sessions.get(cmd.id).id)}),
   draftSave: cmd => { const session = sessions.get(cmd.id); if (typeof cmd.from !== 'string') throw new Error('Некорректный id вкладки'); saveDraft(db, session.id, cmd.text); publish({type:'draftChanged', sessionId:session.id, text:cmd.text, from:cmd.from}); },
-  notes: cmd => ({notes: listNotes(db, sessions.get(cmd.id).id)}),
-  noteSave: cmd => { const session = sessions.get(cmd.id); saveNote(db, session.id, cmd.noteId, cmd.text); publish({type:'notesChanged', sessionId:session.id}); },
+  notes: cmd => { const session = sessions.get(cmd.id); return { notes: session.id === SECRETARY_ID ? listAllNotes(db) : listNotes(db, session.id) }; },
+  noteSave: cmd => { const session = sessions.get(cmd.id); saveNote(db, session.id, cmd.noteId, cmd.text, cmd.title); publish({type:'notesChanged', sessionId:session.id}); },
   noteDelete: cmd => { const session = sessions.get(cmd.id); deleteNote(db, session.id, cmd.noteId); publish({type:'notesChanged', sessionId:session.id}); },
   read: cmd => {
     const session = sessions.get(cmd.id);
