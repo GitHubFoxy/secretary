@@ -2,8 +2,11 @@
   import MessageItem from './MessageItem.svelte';
   import Icon from './Icon.svelte';
   import { tick } from 'svelte';
+  import { shouldPrefetch } from '../history-prefetch.js';
   // bottomInset — высота поля ввода поверх списка (плюс клавиатура), под ней должны оставаться видимыми последние сообщения.
-  let { ondecide, messages = [], sessions = [], historyLoaded = false, historyLoading = false, historyError = '', historyOlderError = '', onretryHistory, connected = false, historyHasMore = false, historyLoadingOlder = false, onloadOlder, bottomInset = 0, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing, restoreDisabled = false } = $props();
+  // Кнопки догрузки истории нет навсегда: older-страницы тянем фоном при приближении к верху (shouldPrefetch)
+  // и тихим автоповтором при ошибке — сверху допустим только короткий skeleton/spinner.
+  let { ondecide, messages = [], sessions = [], historyLoaded = false, historyLoading = false, connected = false, historyHasMore = false, historyLoadingOlder = false, onloadOlder, bottomInset = 0, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing, restoreDisabled = false } = $props();
   let scroller = $state();
   let content = $state();
   let pinned = $state(true);
@@ -11,8 +14,7 @@
 
   async function onscroll() {
     pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
-    const items = scroller.querySelectorAll('[data-message]');
-    if (!connected || !historyHasMore || historyLoading || historyLoadingOlder || historyOlderError || loading || !items[9] || items[9].getBoundingClientRect().bottom < scroller.getBoundingClientRect().top) return;
+    if (!shouldPrefetch({connected, hasMore: historyHasMore, loading: historyLoading, loadingOlder: historyLoadingOlder || loading, scrollTop: scroller.scrollTop})) return;
     await loadOlder();
   }
 
@@ -43,20 +45,18 @@
     observer.observe(content);
     return () => observer.disconnect();
   });
+
+  // Короткий список (окно предзагрузки ещё не заполнено) дотягиваем фоном без участия пользователя.
+  $effect(() => {
+    if (!scroller || !connected || !historyHasMore || historyLoading || historyLoadingOlder || loading) return;
+    if (historyLoaded && scroller.scrollHeight <= scroller.clientHeight + 600) loadOlder();
+  });
 </script>
 
 <div bind:this={scroller} onscroll={onscroll} class="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]" aria-live="polite">
   <div bind:this={content} class="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 pt-6" style="padding-bottom: {bottomInset + 24}px">
-    {#if historyHasMore}
-      <div class="text-center text-sm text-neutral-400">
-        {#if historyOlderError}<p role="alert">Не удалось загрузить сообщения: {historyOlderError}</p>{/if}
-        <button type="button" class="underline disabled:opacity-50" disabled={!connected || historyLoading || historyLoadingOlder} onclick={loadOlder}>{historyOlderError ? 'Повторить' : 'Загрузить предыдущие сообщения'}</button>
-      </div>
-    {/if}
     {#if historyLoading}
       <p role="status" class="text-center text-sm text-neutral-400">Загрузка сообщений…</p>
-    {:else if historyError}
-      <p role="alert" class="text-center text-sm text-neutral-400">Не удалось загрузить сообщения: {historyError} <button class="underline" onclick={onretryHistory}>Повторить</button></p>
     {:else if messages.length === 0}
       <p class="py-16 text-center text-sm text-neutral-600">{!connected ? 'Нет связи с Host. Повторное подключение…' : historyLoaded ? 'Сообщений пока нет' : ''}</p>
     {/if}
