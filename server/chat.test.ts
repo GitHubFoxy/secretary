@@ -91,3 +91,44 @@ test('распознаёт лимит Claude Code и Codex, но не обычн
   expect(usageLimit({type:'result', is_error:true, result:'authentication failed'})).toBeNull();
   expect(usageLimit({type:'result', is_error:false, result:'usage limit'})).toBeNull();
 });
+
+const opencodeUpdate = (update: object) => ({ method: 'session/update', params: { sessionId: 'ses_1', update } });
+
+test('OpenCode: итог хода становится ответом, отмена — ничем', () => {
+  expect(chatMessage({ type: 'opencode_result', text: 'ответ', stopReason: 'end_turn', usage: {} })).toEqual({ kind: 'agent', text: 'ответ' });
+  expect(chatMessage({ type: 'opencode_result', text: 'NO_REPLY', stopReason: 'end_turn', usage: {} })).toBeNull();
+  expect(chatMessage({ type: 'opencode_result', text: 'частично', stopReason: 'cancelled', usage: {} })).toBeNull();
+});
+
+test('OpenCode: чанки и вызовы инструментов становятся сообщениями чата', () => {
+  expect(chatMessage(opencodeUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'прив' } }))).toEqual({ kind: 'writing' });
+  expect(chatMessage(opencodeUpdate({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'проверю тесты' } }))).toEqual({ kind: 'thinking', text: 'проверю тесты' });
+  expect(chatMessage(opencodeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'c1', name: 'shell', kind: 'execute', title: 'shell', status: 'pending', rawInput: { command: 'bun test' } })))
+    .toEqual({ kind: 'step', tool: 'shell', summary: 'bun test' });
+  expect(chatMessage(opencodeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'c2', name: 'read', kind: 'read', title: 'read', status: 'pending', rawInput: { path: 'note.txt' } })))
+    .toEqual({ kind: 'step', tool: 'read', summary: 'note.txt' });
+  expect(chatMessage(opencodeUpdate({ sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed' }))).toBeNull();
+  expect(chatMessage(opencodeUpdate({ sessionUpdate: 'usage_update', used: 1, size: 2 }))).toBeNull();
+  expect(chatMessage(opencodeUpdate({ sessionUpdate: 'available_commands_update', availableCommands: [] }))).toBeNull();
+});
+
+test('OpenCode: сжатие видно и через обновление, и через маркер', () => {
+  const time = '2026-11-27T12:00:00.000Z';
+  expect(chatMessage(opencodeUpdate({ sessionUpdate: 'compaction_update', status: 'completed' }), time)).toEqual({ kind: 'compaction', time });
+  expect(chatMessage(opencodeUpdate({ sessionUpdate: 'compaction_update', status: 'started' }), time)).toBeNull();
+  expect(chatMessage(opencodeUpdate({ sessionUpdate: 'session_info_update', _meta: { 'opencode/compaction': { status: 'failed' } } }), time)).toEqual({ kind: 'compaction', time });
+  expect(chatMessage(opencodeUpdate({ sessionUpdate: 'session_info_update', _meta: { 'opencode/compaction': { status: 'started' } } }), time)).toBeNull();
+});
+
+test('OpenCode: повтор после rate-limit распознаётся как лимит', () => {
+  const retry = (type: string) => opencodeUpdate({ sessionUpdate: 'session_info_update', _meta: { 'opencode/retry': { attempt: 1, nextRetryAt: '2026-11-27T12:00:05.000Z', error: { type, message: 'slow down' } } } });
+  expect(usageLimit(retry('provider.rate-limit'))).toEqual({ resetsAt: Date.parse('2026-11-27T12:00:05.000Z') });
+  expect(chatMessage(retry('provider.rate-limit'))).toBeNull();
+  expect(usageLimit(retry('provider.auth'))).toBeNull();
+});
+
+test('OpenCode: обновления дочерних сессий показываются как обычные шаги', () => {
+  const child = { 'opencode/child-session': { id: 'ses_child', parentID: 'ses_1', depth: 1, title: 'Explore' } };
+  expect(chatMessage(opencodeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'ses_child:call_1', name: 'read', kind: 'read', title: 'Explore the codebase: src/app.ts', status: 'pending', rawInput: { path: 'src/app.ts' }, _meta: child })))
+    .toEqual({ kind: 'step', tool: 'read', summary: 'src/app.ts' });
+});

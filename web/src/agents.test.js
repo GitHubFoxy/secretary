@@ -6,6 +6,8 @@ test('названия моделей читаются как у людей', ()
   expect(modelLabel('claude-haiku-4-5-20251001')).toBe('Haiku 4.5');
   expect(modelLabel('opus')).toBe('Opus');
   expect(modelLabel('gpt-6.2-sol')).toBe('GPT 6.2 Sol');
+  expect(modelLabel('pag/beam-free')).toBe('Beam Free');
+  expect(modelLabel('pag/deepseek-v4-pro')).toBe('Deepseek V4 Pro');
 });
 
 test('переключения подряд склеиваются, а возврат к тем же настройкам исчезает', () => {
