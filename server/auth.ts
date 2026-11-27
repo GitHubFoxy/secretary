@@ -7,6 +7,8 @@ const folder = `${homedir()}/.secretary`;
 mkdirSync(folder, { recursive: true, mode: 0o700 });
 const db = new Database(`${folder}/auth.sqlite`, { create: true });
 chmodSync(`${folder}/auth.sqlite`, 0o600);
+db.run('PRAGMA busy_timeout = 5000');
+db.run('PRAGMA journal_mode = WAL');
 db.run('CREATE TABLE IF NOT EXISTS pairing (code TEXT NOT NULL, expires INTEGER NOT NULL)');
 db.run('CREATE TABLE IF NOT EXISTS devices (token TEXT PRIMARY KEY)');
 db.run('CREATE TABLE IF NOT EXISTS pairing_rate (client TEXT PRIMARY KEY, count INTEGER NOT NULL, expires INTEGER NOT NULL)');

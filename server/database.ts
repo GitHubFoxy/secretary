@@ -20,6 +20,8 @@ export function migrateDatabase(source: string, destination: string) {
 // Opens the store and brings an older schema up to date. Tests pass ':memory:'.
 export function openDatabase(path: string) {
   const db = new Database(path, { create: true });
+  db.run('PRAGMA busy_timeout = 5000');
+  db.run('PRAGMA journal_mode = WAL');
   const addColumn = (table: string, definition: string) => {
     const name = definition.split(' ')[0];
     const columns = db.query(`PRAGMA table_info(${table})`).all() as { name: string }[];

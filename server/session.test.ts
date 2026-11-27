@@ -409,3 +409,12 @@ test('лимит без времени назначает продолжение
   expect(schedule.next_run!).toBeGreaterThanOrEqual(before + 30 * 60_000);
   expect(schedule.next_run!).toBeLessThanOrEqual(Date.now() + 30 * 60_000);
 });
+
+test('при ошибке хода родитель получает один отчёт', async () => {
+  const { calls, create } = setup();
+  const parent = await create();
+  const child = await create({ parentId: parent.id });
+  child.send('задача'); calls[0].start(); calls[0].fail(); await tick();
+  expect(calls).toHaveLength(2);
+  expect(calls[1].text).toBe(reportText(child.info, 'Ход упал: spawn failed'));
+});
