@@ -36,7 +36,7 @@
   {#if m.status}
     <p class="mt-2">{settings.statuses[m.status] || (m.kind === 'skill' ? 'Отклонено' : m.status)}</p>
   {:else}
-    {#if settings.input}<label class="mt-3 block">{settings.input} <input class="mt-1 block w-full rounded bg-neutral-800 p-2" type="password" autocomplete="off" bind:value={password} /></label>{/if}
+    {#if settings.input}<label class="mt-3 block">{settings.input} <input class="mt-1 block w-full rounded bg-neutral-800 p-2" type="password" autocomplete="new-password" data-1p-ignore data-bwignore readonly onfocus={(e) => e.currentTarget.removeAttribute('readonly')} bind:value={password} /></label>{/if}
     <div class="mt-3 flex gap-3"><button class="rounded bg-amber-700 px-3 py-2" disabled={!connected || busy || (settings.input && !password)} onclick={() => decide(true)}>{settings.approve}</button><button class="rounded bg-neutral-700 px-3 py-2" disabled={!connected || busy} onclick={() => decide(false)}>Отклонить</button></div>
     {#if error}<p class="mt-2 text-red-400">{error}</p>{/if}
   {/if}

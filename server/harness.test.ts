@@ -189,7 +189,7 @@ test('opencode: системный промпт едет файлом в OPENCOD
     expect(await t.result).toBe(true);
     const config = JSON.parse(t.calls().find(call => call.setup)?.config);
     expect(config.model).toBe('pag/custom');
-    expect(config.permissions).toEqual([{ action: '*', resource: '*', effect: 'allow' }]);
+    expect(config.permissions).toEqual([{ action: '*', resource: '*', effect: 'allow' }, { action: 'websearch', resource: '*', effect: 'deny' }]);
     expect(config.instructions).toHaveLength(1);
     expect(readFileSync(config.instructions[0], 'utf8')).toBe(SECRETARY_PROMPT);
   } finally {

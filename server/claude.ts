@@ -2,7 +2,7 @@ import { prepareMcp } from './external-mcp';
 import { onAbort, readJsonLines, spawnHarness, type Turn } from './harness';
 
 export async function claudeLaunch(options: import('./harness').TurnOptions) {
-  const args = ['claude', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', '--model', options.model];
+  const args = ['claude', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', '--disallowedTools', 'WebSearch', '--model', options.model];
   if (options.reasoning) args.push('--effort', options.reasoning);
   if (options.resumeId) args.push('--resume', options.resumeId);
   const {env, servers} = await prepareMcp(options.mcpRoot, options.mcpRole);

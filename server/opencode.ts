@@ -21,7 +21,8 @@ export async function opencodeLaunch(options: Pick<TurnOptions, 'systemPrompt' |
     if (await Bun.file(file).text().catch(() => null) !== options.systemPrompt) await Bun.write(file, options.systemPrompt);
     if (!instructions.includes(file)) instructions = [...instructions, file];
   }
-  env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ...base, permissions: [{ action: '*', resource: '*', effect: 'allow' }], ...(instructions.length ? { instructions } : {}) });
+  // Нативный веб-поиск отключён: ищут только через наш MCP (Parallel). Последнее правило побеждает.
+  env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ...base, permissions: [{ action: '*', resource: '*', effect: 'allow' }, { action: 'websearch', resource: '*', effect: 'deny' }], ...(instructions.length ? { instructions } : {}) });
   return { args, env, prepared };
 }
 
