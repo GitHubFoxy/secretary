@@ -46,8 +46,8 @@
   });
 </script>
 
-<!-- Высота фиксирована, чтобы модалка не прыгала между загрузкой, данными и ошибкой. Длинный текст прокручивается внутри. -->
-<div class="h-80 overflow-y-auto">
+<!-- Высота и прокрутка — у модалки «Лимиты»: внутри неё секции Codex и OpenCode. -->
+<div>
 {#if !limits}
   <p class="break-words text-sm text-neutral-400" role="status">{status}</p>
 {:else}

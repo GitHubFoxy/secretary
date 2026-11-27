@@ -24,7 +24,7 @@
   import ProfileScreen from './components/ProfileScreen.svelte';
   import DownloadsScreen from './components/DownloadsScreen.svelte';
   import CodexLimits from './components/CodexLimits.svelte';
-  import OpenCodeUsage from './components/OpenCodeUsage.svelte';
+  import OpenCodeLimits from './components/OpenCodeLimits.svelte';
   import SpeakingPill from './components/SpeakingPill.svelte';
   import { mergeSwitches } from './agents.js';
   import { Capacitor, registerPlugin } from '@capacitor/core';
@@ -127,7 +127,7 @@
   $: secretaryForShare = sessions.find(s => s.secretary);
   $: if (shared.length && secretaryForShare && !shareBusy) applyShared(shared[0], secretaryForShare);
   let limitsOpen = false, limits = null, limitsStatus = '';
-  let opencodeUsageOpen = false, opencodeUsageData = null, opencodeUsageStatus = '';
+  let opencodeLimits = null, opencodeLimitsStatus = '';
   let profileOpen = false, downloadsOpen = false, instructionsDirty = false;
   let notesOpen = false, notesRevision = 0, notesCount = 0;
   let interruptStates = {};
@@ -234,7 +234,7 @@
   }
   let openSecretaryPending = false;
   function openSecretary() {
-    drawerOpen = settingsOpen = renameOpen = profileOpen = voiceMode = notesOpen = limitsOpen = opencodeUsageOpen = false;
+    drawerOpen = settingsOpen = renameOpen = profileOpen = voiceMode = notesOpen = limitsOpen = false;
     const secretary = sessions.find(s => s.secretary);
     openSecretaryPending = !secretary;
     if (secretary) select(secretary.id);
@@ -337,19 +337,15 @@
     } catch (err) { limitsStatus = `Не удалось загрузить: ${err.message || err}`; }
   }
   function openLimits() {
-    drawerOpen = false; limitsOpen = true; limits = null; limitsStatus = 'Загрузка…';
-    loadLimits();
+    drawerOpen = false; limitsOpen = true; limits = null; limitsStatus = 'Загрузка…'; opencodeLimits = null; opencodeLimitsStatus = 'Загрузка…';
+    loadLimits(); loadOpencodeLimits();
   }
-  async function loadOpencodeUsage() {
+  async function loadOpencodeLimits() {
     try {
-      const response = await fetch('/opencode/usage');
+      const response = await fetch('/opencode/limits');
       if (!response.ok) throw new Error(await response.text());
-      opencodeUsageData = await response.json(); opencodeUsageStatus = '';
-    } catch (err) { opencodeUsageStatus = `Не удалось загрузить: ${err.message || err}`; }
-  }
-  function openOpencodeUsage() {
-    drawerOpen = false; opencodeUsageOpen = true; opencodeUsageData = null; opencodeUsageStatus = 'Загрузка…';
-    loadOpencodeUsage();
+      opencodeLimits = await response.json(); opencodeLimitsStatus = '';
+    } catch (err) { opencodeLimitsStatus = `Не удалось загрузить: ${err.message || err}`; }
   }
   function groupSteps(items, running) {
     const grouped = [];
@@ -468,12 +464,17 @@
       {#if current}{#key selected}<SettingsPanel session={current} {connected} onsave={saveSettings} onstop={stop} oncreate={createThread} onrename={openRename} />{/key}{/if}
     </Modal>
 
-    <Modal open={limitsOpen} title="Лимиты Codex" onclose={() => (limitsOpen = false)}>
-      <CodexLimits {limits} status={limitsStatus} onrefresh={loadLimits} />
-    </Modal>
-
-    <Modal open={opencodeUsageOpen} title="Расход OpenCode" onclose={() => (opencodeUsageOpen = false)}>
-      <OpenCodeUsage usage={opencodeUsageData} status={opencodeUsageStatus} onrefresh={loadOpencodeUsage} />
+    <Modal open={limitsOpen} title="Лимиты" onclose={() => (limitsOpen = false)}>
+      <div class="flex h-80 flex-col gap-6 overflow-y-auto">
+        <section class="flex flex-col gap-2">
+          <h3 class="text-sm font-medium text-neutral-100">Codex</h3>
+          <CodexLimits {limits} status={limitsStatus} onrefresh={loadLimits} />
+        </section>
+        <section class="flex flex-col gap-2">
+          <h3 class="text-sm font-medium text-neutral-100">OpenCode</h3>
+          <OpenCodeLimits limits={opencodeLimits} status={opencodeLimitsStatus} onrefresh={loadOpencodeLimits} />
+        </section>
+      </div>
     </Modal>
 
     {#if error}
@@ -497,6 +498,6 @@
     </div>
 
 
-    <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onhide={s => setHidden(s, true)} onrestore={s => setHidden(s, false)} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} onlimits={openLimits} onopencode={openOpencodeUsage} ondownloads={() => { drawerOpen = false; downloadsOpen = true; }} />
+    <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onhide={s => setHidden(s, true)} onrestore={s => setHidden(s, false)} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} onlimits={openLimits} ondownloads={() => { drawerOpen = false; downloadsOpen = true; }} />
   </div>
 {/if}
