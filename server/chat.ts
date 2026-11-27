@@ -33,6 +33,16 @@ export function agentAnswer(event: any): string | null {
   return item?.type === 'agentMessage' && typeof item.text === 'string' ? item.text : null;
 }
 
+export function visibleAnswer(text: string | null | undefined): text is string {
+  return !!text && !text.startsWith('NO_REPLY');
+}
+
+export function speechAnswer(event: any) {
+  return event?.type === 'assistant'
+    ? (event.message?.content || []).filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n')
+    : event?.method === 'item/completed' && event.params?.item?.type === 'agentMessage' ? event.params.item.text : '';
+}
+
 // The harness reports reset timestamps in seconds or in its local time in the error text.
 export function usageLimit(event: any): { resetsAt?: number } | null {
   const error = event?.method === 'turn/completed' ? event.params?.turn?.error
@@ -129,7 +139,7 @@ export function chatMessage(event: any, time = ''): ChatMessage | null {
   if (event?.type === 'agent_preview') return { kind: 'agent', text: '', preview: { url: event.url, expires_at: event.expires_at } };
   if (event?.type === 'agent_files') return { kind: 'agent', text: event.text, files: event.files };
   const answer = agentAnswer(event);
-  if (answer !== null) return answer && !answer.startsWith('NO_REPLY') ? { kind: 'agent', text: answer } : null;
+  if (answer !== null) return visibleAnswer(answer) ? { kind: 'agent', text: answer } : null;
   const images: Image[] = event?.images || [];
   const files: FileAttachment[] = event?.files || [];
   if (event?.type === 'user') {

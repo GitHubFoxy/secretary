@@ -4,7 +4,7 @@ import { Sudo } from './sudo';
 import { Schedules } from './schedules';
 import { recall } from './database';
 import type { Database } from 'bun:sqlite';
-import { chatHistory, reportText, usageLimitText } from './chat';
+import { chatHistory, reportText, usageLimitText, visibleAnswer } from './chat';
 import { hostPath, mcpUrl as defaultMcpUrl } from './config';
 import type { Turn } from './harness';
 import { SECRETARY_PROMPT, specialistPrompt } from './persona';
@@ -142,8 +142,8 @@ export class Sessions {
     // A child's answer goes to its parent as a report unless it explicitly chose NO_REPLY.
     session.onComplete = answer => {
       const info = session.info;
-      if (info.id === SECRETARY_ID && answer && !answer.startsWith('NO_REPLY')) this.options.onEvent(session, {type:'secretary_reply', text:markdownText(answer)});
-      if (info.parent_id && answer && !answer.startsWith('NO_REPLY')) this.all.get(info.parent_id)?.send(reportText(info, answer));
+      if (info.id === SECRETARY_ID && visibleAnswer(answer)) this.options.onEvent(session, {type:'secretary_reply', text:markdownText(answer)});
+      if (info.parent_id && visibleAnswer(answer)) this.all.get(info.parent_id)?.send(reportText(info, answer));
     };
     return session;
   }
