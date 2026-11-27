@@ -4,7 +4,7 @@
   let { harness = $bindable(), model = $bindable(), reasoning = $bindable(), current = null } = $props();
 
   let details = $state([]);
-  // Hosted может отключать harness через SECRETARY_HARNESSES: карточки лишних прячем.
+  // Hosted может отключать harness через SECRETARY_HARNESSES: лишние показываем Disabled.
   let available = $state(harnesses.map(h => h.value));
   $effect(() => {
     fetch('/harnesses').then(r => r.json()).then(
@@ -12,7 +12,7 @@
       () => {},
     );
   });
-  const visible = $derived(harnesses.filter(h => available.includes(h.value)));
+  const isAvailable = h => available.includes(h.value);
   // Сессия может хранить псевдоним Claude Code («opus»): он остаётся значением своей модели в списке.
   const matches = m => m.id === model || m.aliases?.includes(model);
   let levels = $derived(details.find(matches)?.supportedReasoningEfforts.map(e => e.reasoningEffort) ?? []);
@@ -46,17 +46,20 @@
 
 <div class="flex flex-col gap-3">
   <div role="group" aria-label="Агент" class="grid grid-cols-2 gap-2">
-    {#each visible as item (item.value)}
+    {#each harnesses as item (item.value)}
       {@const on = harness === item.value}
+      {@const off = !isAvailable(item)}
       <button
         type="button"
         aria-pressed={on}
-        class="cursor-pointer rounded-2xl p-3 text-left transition-colors {on ? 'border-2 bg-neutral-800/50 ' + (item.value === 'claude' ? 'border-[#D97757]' : 'border-neutral-200') : 'border border-neutral-800 hover:bg-neutral-900'}"
-        onclick={() => (harness = item.value)}
+        disabled={off}
+        title={off ? 'Отключено на этом Host' : undefined}
+        class="rounded-2xl p-3 text-left transition-colors {on ? 'border-2 bg-neutral-800/50 ' + (item.value === 'claude' ? 'border-[#D97757]' : 'border-neutral-200') : 'border border-neutral-800 hover:bg-neutral-900'} {off ? 'cursor-not-allowed opacity-40 hover:bg-transparent' : 'cursor-pointer'}"
+        onclick={() => { if (!off) harness = item.value; }}
       >
         <Icon name={item.value} class="mb-2 size-6 {item.accent}" />
         <span class="block text-sm font-medium text-neutral-100">{item.title}</span>
-        <span class="block h-4 text-[11px] text-neutral-500">{current === item.value ? 'сейчас' : ''}</span>
+        <span class="block h-4 text-[11px] text-neutral-500">{off ? 'отключено' : current === item.value ? 'сейчас' : ''}</span>
       </button>
     {/each}
   </div>

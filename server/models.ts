@@ -112,6 +112,17 @@ async function opencodeModels(): Promise<ModelDetails[]> {
   }
 }
 
+// Hosted: SECRETARY_OPENCODE_MODELS ограничивает список моделей OpenCode (через запятую).
+// Пусто — все модели провайдера. Задаёт и список в UI, и проверку при смене модели.
+function opencodeAllowlist(): string[] {
+  return (process.env.SECRETARY_OPENCODE_MODELS ?? '').split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function applyOpencodeAllowlist(list: ModelDetails[]): ModelDetails[] {
+  const allowed = opencodeAllowlist();
+  if (!allowed.length) return list;
+  return list.filter(m => allowed.includes(m.id) || m.aliases?.some(a => allowed.includes(a)));
+}
 const loaders: Record<string, () => Promise<ModelDetails[]>> = { claude: claudeModels, codex: codexModels, opencode: opencodeModels };
 const cache = new Map<string, Promise<ModelDetails[]>>();
 
@@ -120,7 +131,7 @@ export function modelDetails(harness: string, fresh = false) {
   const load = loaders[harness];
   if (!load) throw new Error('Unknown harness');
   if (fresh || !cache.has(harness)) {
-    const models = load();
+    const models = load().then(list => harness === 'opencode' ? applyOpencodeAllowlist(list) : list);
     cache.set(harness, models);
     models.catch(() => cache.delete(harness));
   }
@@ -128,6 +139,13 @@ export function modelDetails(harness: string, fresh = false) {
 }
 
 export async function checkReasoning(harness: string, model: string, reasoning: string) {
+  if (harness === 'opencode') {
+    const allowed = opencodeAllowlist();
+    if (allowed.length && !allowed.includes(model)) {
+      const details = (await modelDetails(harness)).find(m => m.id === model || m.aliases?.includes(model));
+      if (!details || !allowed.includes(details.id)) throw new Error('Модель недоступна на этом Host');
+    }
+  }
   const details = (await modelDetails(harness)).find(m => m.id === model || m.aliases?.includes(model));
   if (!details?.supportedReasoningEfforts.some(e => e.reasoningEffort === reasoning)) throw new Error('Unsupported model or reasoning level');
 }

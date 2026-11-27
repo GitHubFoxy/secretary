@@ -122,6 +122,10 @@ export class Sessions {
 
   async check({ harness, model, reasoning }: SessionSettings) {
     if (!this.harnesses.includes(harness) || typeof model !== 'string' || !model) throw new Error('Некорректные настройки сессии');
+    if (harness === 'opencode') {
+      const allowed = (process.env.SECRETARY_OPENCODE_MODELS ?? '').split(',').map(s => s.trim()).filter(Boolean);
+      if (allowed.length && !allowed.includes(model)) throw new Error('Модель недоступна на этом Host');
+    }
     if (reasoning !== null) await this.options.checkModel(harness, model, reasoning);
   }
 
