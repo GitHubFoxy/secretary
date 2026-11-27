@@ -1,5 +1,6 @@
 <script>
   import { blockedBySpentWeek } from '../codex-limits.js';
+  import LimitsSkeleton from './LimitsSkeleton.svelte';
   // Окна лимитов приходят в минутах: 300 — пять часов, 10080 — неделя.
   let { limits = null, status = '', onrefresh } = $props();
 
@@ -46,32 +47,35 @@
   });
 </script>
 
-<!-- Высота и прокрутка — у модалки «Лимиты»: внутри неё секции Codex и OpenCode. -->
-<div>
-{#if !limits}
-  <p class="break-words text-sm text-neutral-400" role="status">{status}</p>
+{#if !limits && !status}
+  <LimitsSkeleton rows={2} />
+{:else if !limits}
+  <div class="flex flex-col gap-2">
+    <p class="break-words text-sm text-red-400" role="alert">{status}</p>
+    <button type="button" class="btn-ghost self-start" onclick={onrefresh}>Повторить</button>
+  </div>
 {:else}
-  <div class="flex flex-col gap-5">
+  <div class="flex flex-col gap-3 sm:gap-4">
     {#each snapshots as snapshot}
-      <section class="flex flex-col gap-3">
+      <section class="flex min-w-0 flex-col gap-2 sm:gap-3">
         <div class="flex items-baseline justify-between gap-3">
-          <h3 class="text-sm font-medium text-neutral-100">{snapshot.limitName || snapshot.limitId || 'Codex'}</h3>
-          {#if snapshot.planType}<span class="font-mono text-xs text-neutral-500">{snapshot.planType}</span>{/if}
+          <h4 class="truncate text-[13px] font-medium text-neutral-300">{snapshot.limitName || snapshot.limitId || 'Codex'}</h4>
+          {#if snapshot.planType}<span class="shrink-0 rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] text-neutral-400">{snapshot.planType}</span>{/if}
         </div>
         {#if snapshot.rateLimitReachedType}
           <p class="text-sm text-red-400">Лимит исчерпан</p>
         {/if}
         {#each blockedBySpentWeek(snapshot, now) as window}
-          <div class="flex flex-col gap-1.5">
-            <div class="flex items-baseline justify-between text-xs text-neutral-400">
-              <span>{windowName(window.windowDurationMins)}</span>
-              <span><span class="font-mono text-neutral-200">{left(window)}%</span> осталось</span>
+          <div class="flex min-w-0 flex-col gap-1.5 sm:gap-2">
+            <div class="flex items-baseline justify-between gap-3 text-sm">
+              <span class="truncate text-neutral-300">{windowName(window.windowDurationMins)}</span>
+              <span class="shrink-0 text-neutral-400"><span class="font-mono tabular-nums text-neutral-100">{left(window)}%</span> осталось</span>
             </div>
-            <div class="h-1.5 overflow-hidden rounded-full bg-neutral-800" role="meter" aria-label="Осталось" aria-valuemin="0" aria-valuemax="100" aria-valuenow={left(window)}>
+            <div class="h-2 overflow-hidden rounded-full bg-neutral-800" role="meter" aria-label="Осталось" aria-valuemin="0" aria-valuemax="100" aria-valuenow={left(window)}>
               <div class="h-full rounded-full {barClass(window.usedPercent)}" style:width="{left(window)}%"></div>
             </div>
             {#if window.resetsAt}
-              <span class="text-xs text-neutral-500">До сброса: <span class="font-mono text-neutral-300">{countdown(window.resetsAt)}</span> · {resetText(window.resetsAt)}</span>
+              <p class="text-xs text-neutral-500">До сброса: <span class="font-mono tabular-nums text-neutral-300">{countdown(window.resetsAt)}</span> · {resetText(window.resetsAt)}</p>
             {/if}
           </div>
         {/each}
@@ -79,4 +83,3 @@
     {/each}
   </div>
 {/if}
-</div>
