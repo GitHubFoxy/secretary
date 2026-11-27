@@ -14,6 +14,7 @@ export async function codexThreadStart(options: Pick<import('./harness').TurnOpt
 
 export async function codexLaunch(options: import('./harness').TurnOptions) {
   const args = ['codex', 'app-server'];
+  args.push('-c', 'web_search="disabled"');
   if (options.mcpUrl) args.push('-c', `mcp_servers.secretary.url="${options.mcpUrl}"`, '-c', `mcp_servers.secretary.http_headers.Authorization="Bearer ${options.mcpToken}"`);
   const {env, servers} = await prepareMcp(options.mcpRoot, options.mcpRole);
   for (const {server, mapped} of servers) {
