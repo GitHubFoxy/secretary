@@ -16,15 +16,12 @@ export type NewSession = SessionSettings & { folder: string; branch?: string | n
 
 type Options = {
   turns: Record<string, Turn>;
-  // Rejects a model or reasoning level the harness does not offer.
   checkModel: (harness: string, model: string, reasoning: string) => Promise<void>;
-  // Every Session event, raw. Adapters decide what to show.
   onEvent: (session: Session, event: any, cursor?: number) => void;
   onChange: () => void;
   mcpUrl?: string;
 };
 
-// All Sessions of the Host and the rules for them. The browser and the Secretary Agent (through MCP) are two adapters over this.
 export class Sessions {
   readonly schedules: Schedules;
   approvals!: { skills: Skills; secrets: Secrets; sudo: Sudo };
@@ -139,7 +136,6 @@ export class Sessions {
       const info = session.info;
       if (info.parent_id) this.all.get(info.parent_id)?.send(reportText(info, usageLimitText(resetsAt)));
     };
-    // A child's answer goes to its parent as a report unless it explicitly chose NO_REPLY.
     session.onComplete = answer => {
       const info = session.info;
       if (info.id === SECRETARY_ID && visibleAnswer(answer)) this.options.onEvent(session, {type:'secretary_reply', text:markdownText(answer)});

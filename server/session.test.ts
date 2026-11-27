@@ -1,4 +1,3 @@
-// Session, MessageQueue and Sessions in process, with a scripted harness in place of Claude Code and Codex.
 import { expect, test } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { reportText, usageLimitText } from './chat';
@@ -236,7 +235,6 @@ test('NO_REPLY у Specialist не отправляет отчёт родител
   expect(calls[0].options.systemPrompt).toContain('Ты — Specialist');
   expect(calls[0].options.mcpUrl).toMatch(/\/mcp\/2$/);
   calls[0].start(); calls[0].answer('NO_REPLY'); await tick();
-  // Secretary Agent should NOT receive a report for NO_REPLY.
   expect(calls).toHaveLength(1);
 
   child.send('задача');

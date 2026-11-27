@@ -36,7 +36,6 @@
   }
   const secretary = $derived(sessions.find(s => s.secretary));
   const secretaryId = $derived(secretary?.id);
-  // Specialists with their Workers under them; a Worker whose Specialist is not in the list shows as a top row.
   function groups(list) {
     const ids = new Set(list.map(s => s.id));
     return list.filter(s => !s.parent_id || s.parent_id === secretaryId || !ids.has(s.parent_id))
@@ -46,7 +45,6 @@
   const hiddenSessions = $derived(sessions.filter(s => !s.internal && s.hidden));
   const hiddenGroups = $derived(groups(hiddenSessions));
 
-  // Workers are folded by default; what the owner unfolded is remembered on this device.
   let expanded = $state(new Set(JSON.parse(localStorage.getItem('expanded-specialists') || '[]')));
   function toggle(id) {
     const next = new Set(expanded);

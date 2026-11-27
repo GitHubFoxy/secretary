@@ -42,7 +42,6 @@ export class Session {
   private stopped = false;
   private deleted = false;
   private listeners: ((event: any, cursor?: number) => void)[] = [];
-  // Called with the last answer when a turn completes on its own.
   onComplete?: (answer: string) => void;
   onUsageLimit?: (limit: { resetsAt?: number }) => void;
 
@@ -138,7 +137,6 @@ export class Session {
     this.finish(turn, completed, failure);
   }
 
-  // Files from the agent appear in the chat like its answer; the turn goes on.
   showFiles(files: FileAttachment[], text: string) { this.emit({ type: 'agent_files', text, files }); }
 
   sendQueued(id: unknown) {

@@ -11,7 +11,6 @@ export function markdownText(text: string) {
     .replace(/\u0000(\d+)\u0000/g, (_, index) => inline[Number(index)]).trim();
 }
 
-// Converts only the spoken copy; chat retains the original Markdown.
 export function speechText(text: string) {
   const inline: string[] = [];
   const clean = text

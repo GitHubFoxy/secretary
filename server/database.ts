@@ -18,7 +18,6 @@ export function migrateDatabase(source: string, destination: string) {
   }
 }
 
-// Opens the store and brings an older schema up to date. Tests pass ':memory:'.
 export function openDatabase(path: string) {
   const db = new Database(path, { create: true });
   db.run('PRAGMA busy_timeout = 5000');

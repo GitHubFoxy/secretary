@@ -6,7 +6,6 @@
   let { ondecide, messages = [], sessions = [], historyLoaded = false, connected = false, historyHasMore = false, historyLoadingOlder = false, onloadOlder, bottomInset = 0, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing, restoreDisabled = false } = $props();
   let scroller = $state();
   let content = $state();
-  // Пока пользователь у самого низа, новые размеры списка не сдвигают его последние сообщения под поле ввода.
   let pinned = $state(true);
   let loading = false;
 

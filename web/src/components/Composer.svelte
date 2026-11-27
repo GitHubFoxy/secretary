@@ -108,7 +108,6 @@
     } else recorder = new MediaRecorder(media);
     recorder.ondataavailable = event => chunks.push(event.data);
     recorder.start();
-    // Полоски у таймера показывают, что микрофон слышит голос.
     audio = new AudioContext();
     const analyser = audio.createAnalyser(), samples = new Uint8Array(512);
     audio.createMediaStreamSource(media).connect(analyser);
@@ -215,7 +214,6 @@
     if (!disabled && (value.trim() || images.length)) onsubmit(running);
   }
 
-  // Срочная отправка нужна только во время работы агента.
   // На сенсорном экране (основной ввод — палец) Enter переносит строку, отправка — кнопкой.
   const touch = matchMedia('(pointer: coarse)').matches;
   function keydown(e) {

@@ -26,7 +26,6 @@ export function reportText(child: Child, answer: string) {
   return `[report #${child.id} ${child.harness} ${child.folder}] ${answer}`;
 }
 
-// The final text of a harness turn: Claude Code `result`, Codex `agentMessage`.
 export function agentAnswer(event: any): string | null {
   if (event?.type === 'result' && typeof event.result === 'string') return event.result;
   const item = event?.method === 'item/completed' ? event.params?.item : null;
@@ -154,7 +153,6 @@ export function chatMessage(event: any, time = ''): ChatMessage | null {
   return null;
 }
 
-// Chat messages from newest to oldest, scanning raw events backwards.
 function* messagesBefore(db: Database, sessionId: number, before = Number.MAX_SAFE_INTEGER) {
   const query = db.query('SELECT rowid, json, time FROM events WHERE session_id = ? AND rowid < ? ORDER BY rowid DESC LIMIT 200');
   let cursor = before;

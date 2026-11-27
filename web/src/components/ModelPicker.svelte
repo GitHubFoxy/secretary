@@ -1,7 +1,6 @@
 <script>
   import Icon from './Icon.svelte';
   import { harnesses, modelLabel } from '../agents.js';
-  // current — harness, который сейчас отвечает в чате; его карточка подписана «сейчас».
   let { harness = $bindable(), model = $bindable(), reasoning = $bindable(), current = null } = $props();
 
   let details = $state([]);

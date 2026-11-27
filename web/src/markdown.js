@@ -25,7 +25,6 @@ function escapeHtml(text) {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// Возвращает безопасный HTML для текста сообщения. Если очистка недоступна, показываем текст без разметки.
 export function renderMarkdown(text) {
   const source = String(text ?? '');
   if (!DOMPurify.isSupported) return escapeHtml(source).replace(/\n/g, '<br>');

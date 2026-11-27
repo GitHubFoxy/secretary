@@ -296,7 +296,6 @@
   function openSettings() { settingsOpen = true; }
   function openRename() { newName = title; settingsOpen = false; renameOpen = true; }
   function rename() { if (!connected || !newName.trim()) return; error = ''; command({type:'rename', id:selected, name:newName}); renameOpen = false; }
-  // A separate chat in the folder of the current one, starting from an empty context.
   async function createThread({harness, model, reasoning, name}) {
     if (!current) return;
     try {
@@ -446,7 +445,6 @@
         <MessageList ondecide={(kind, id, approved, password) => connection.request({type: `${kind}${approved ? 'Approve' : 'Reject'}`, [kind === 'skill' ? 'skillId' : 'sudoId']: id, ...(password ? {password} : {})})} {messages} {sessions} {historyLoaded} {connected} historyHasMore={historyHasMore} {historyLoadingOlder} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} oncancelVoice={item => voiceMessages = voiceMessages.filter(v => v.key !== item.key)} />
       {/key}
 
-      <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
         <div class="pointer-events-auto">
           {#if interruptStates[selected]?.message}<p role="status" aria-live="polite" class="mx-auto max-w-3xl px-4 text-sm text-neutral-400">{interruptStates[selected].message}</p>{/if}
