@@ -39,7 +39,7 @@ _Avoid_: proxy, router, балансировщик
 _Avoid_: логин, ID пользователя, код сопряжения
 
 **Session**:
-Любой работающий агент: процесс harness (Claude Code или Codex) плюс его история в SQLite. Secretary Agent, Specialists и Workers — одинаковые сессии; у дочерней есть родитель.
+Любой работающий агент: процесс harness (Claude Code, Codex или OpenCode) плюс его история в SQLite. Secretary Agent, Specialists и Workers — одинаковые сессии; у дочерней есть родитель.
 _Avoid_: task, тред, процесс
 
 **Immediate message**:
