@@ -24,6 +24,11 @@ class MainActivity : BridgeActivity() {
     public override fun onResume() { super.onResume(); resumed = this }
     public override fun onPause() { resumed = null; super.onPause() }
 
+    override fun load() {
+        HostAddress.get(this)?.let { findViewById<ComposerWebView>(com.getcapacitor.android.R.id.webview).enableImages(it) }
+        super.load()
+    }
+
     public override fun onCreate(savedInstanceState: Bundle?) {
         val host = HostAddress.get(this)
         config = CapConfig.Builder(this).apply {

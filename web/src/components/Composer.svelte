@@ -1,7 +1,9 @@
 <script>
-  import { onDestroy, tick } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
+  import { Capacitor } from '@capacitor/core';
   import Icon from './Icon.svelte';
   import { clipboardImages } from '../clipboard-images.js';
+  import { receiveImeImage } from '../ime-image.js';
   import { filterCommands, slashToken } from '../slash-commands.js';
   import AttachmentPopover from './AttachmentPopover.svelte';
   import AttachmentStrip from './AttachmentStrip.svelte';
@@ -224,6 +226,20 @@
     if (image.url) URL.revokeObjectURL(image.url);
     images = images.filter(item => item !== image);
   }
+  onMount(() => {
+    const ime = window.SecretaryIme;
+    if (!ime) return;
+    ime.onmessage = ({data}) => {
+      receiveImeImage(data, {
+        fetchFile: path => fetch(Capacitor.convertFileSrc(path)),
+        isFocused: () => document.activeElement === area && !disabled,
+        add: file => add([file]),
+        done: id => ime.postMessage(JSON.stringify({action:'done', id})),
+      }).catch(error => { imageError = error.message; });
+    };
+    return () => { ime.onmessage = null; ime.postMessage(JSON.stringify({action:'blur'})); };
+  });
+  function imeFocus(action) { window.SecretaryIme?.postMessage(JSON.stringify({action})); }
   function paste(e) {
     const files = clipboardImages(e.clipboardData);
     if (files.length) { e.preventDefault(); add(files); }
@@ -294,6 +310,8 @@
       onkeyup={event => moveCursor(event.target.selectionStart)}
       onkeydown={keydown}
       onpaste={paste}
+      onfocus={() => imeFocus('focus')}
+      onblur={() => imeFocus('blur')}
       placeholder="Напишите сообщение"
       class="max-h-40 min-h-10 flex-1 resize-none bg-transparent [scrollbar-width:none] [&::-webkit-scrollbar]:hidden px-2 py-2 text-[15px] text-neutral-100 placeholder:text-neutral-600 focus:outline-none"
     ></textarea>
