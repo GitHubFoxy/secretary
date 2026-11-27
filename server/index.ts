@@ -18,6 +18,7 @@ import { ExternalMcp } from './external-mcp';
 import { getDraft, saveDraft } from './drafts';
 import { listNotes, saveNote, deleteNote } from './notes';
 import { checkReasoning, modelDetails } from './models';
+import { opencodeUsage } from './opencode-usage';
 import { ensurePersona, instructionsFile, setSpecialistModel, specialistModel, systemPrompts, type Role } from './persona';
 import { Sessions } from './sessions';
 import { Speech, warmSpeech, ttsEngine, setTtsEngine } from './speech';
@@ -191,6 +192,8 @@ function handleRequest(request: Request, server: any) {
       return Promise.resolve().then(() => modelDetails(url.searchParams.get('harness') || '', true)).then(result => Response.json(result), error => new Response(String(error), { status: 500 }));
     if (url.pathname === '/codex/limits')
       return codexRateLimits().then(limits => Response.json(limits), error => new Response(error.message, { status: 500 }));
+    if (url.pathname === '/opencode/usage')
+      return Response.json(opencodeUsage(db));
     if (url.pathname === '/settings/agent-view') {
       if (request.method !== 'GET') return new Response(null, {status:405});
       return agentView(secretaryFolder, sessions, url.searchParams.get('session')).then(data => Response.json(data, {headers:{'Cache-Control':'no-store'}}), error => new Response(String(error), {status:400}));

@@ -3,7 +3,7 @@
   import Icon from './Icon.svelte';
   import { Capacitor } from '@capacitor/core';
   import { harnessInfo, modelLabel } from '../agents.js';
-  let { open = false, sessions = [], selected, connected = false, onhide, onrestore, onselect, onclose, onprofile, onlimits, ondownloads } = $props();
+  let { open = false, sessions = [], selected, connected = false, onhide, onrestore, onselect, onclose, onprofile, onlimits, onopencode, ondownloads } = $props();
 
   let hiddenOpen = $state(false);
   let offset = $state(0), dragging = $state(false);
@@ -151,6 +151,9 @@
       </button>
       <button class="icon-btn shrink-0" aria-label="Лимиты Codex" title="Лимиты Codex" onclick={onlimits}>
         <Icon name="gauge" />
+      </button>
+      <button class="icon-btn shrink-0" aria-label="Расход OpenCode" title="Расход OpenCode" onclick={onopencode}>
+        <Icon name="opencode" />
       </button>
     </div>
   </aside>

@@ -23,6 +23,7 @@
   import ProfileScreen from './components/ProfileScreen.svelte';
   import DownloadsScreen from './components/DownloadsScreen.svelte';
   import CodexLimits from './components/CodexLimits.svelte';
+  import OpenCodeUsage from './components/OpenCodeUsage.svelte';
   import SpeakingPill from './components/SpeakingPill.svelte';
   import { mergeSwitches } from './agents.js';
   import { Capacitor, registerPlugin } from '@capacitor/core';
@@ -123,6 +124,7 @@
   $: secretaryForShare = sessions.find(s => s.secretary);
   $: if (shared.length && secretaryForShare && !shareBusy) applyShared(shared[0], secretaryForShare);
   let limitsOpen = false, limits = null, limitsStatus = '';
+  let opencodeUsageOpen = false, opencodeUsageData = null, opencodeUsageStatus = '';
   let profileOpen = false, downloadsOpen = false, instructionsDirty = false;
   let notesOpen = false, notesRevision = 0, notesCount = 0;
   let interruptStates = {};
@@ -178,7 +180,7 @@
   }
   let openSecretaryPending = false;
   function openSecretary() {
-    drawerOpen = settingsOpen = renameOpen = profileOpen = voiceMode = notesOpen = limitsOpen = false;
+    drawerOpen = settingsOpen = renameOpen = profileOpen = voiceMode = notesOpen = limitsOpen = opencodeUsageOpen = false;
     const secretary = sessions.find(s => s.secretary);
     openSecretaryPending = !secretary;
     if (secretary) select(secretary.id);
@@ -283,6 +285,17 @@
   function openLimits() {
     drawerOpen = false; limitsOpen = true; limits = null; limitsStatus = 'Загрузка…';
     loadLimits();
+  }
+  async function loadOpencodeUsage() {
+    try {
+      const response = await fetch('/opencode/usage');
+      if (!response.ok) throw new Error(await response.text());
+      opencodeUsageData = await response.json(); opencodeUsageStatus = '';
+    } catch (err) { opencodeUsageStatus = `Не удалось загрузить: ${err.message || err}`; }
+  }
+  function openOpencodeUsage() {
+    drawerOpen = false; opencodeUsageOpen = true; opencodeUsageData = null; opencodeUsageStatus = 'Загрузка…';
+    loadOpencodeUsage();
   }
   function groupSteps(items, running) {
     const grouped = [];
@@ -405,6 +418,10 @@
       <CodexLimits {limits} status={limitsStatus} onrefresh={loadLimits} />
     </Modal>
 
+    <Modal open={opencodeUsageOpen} title="Расход OpenCode" onclose={() => (opencodeUsageOpen = false)}>
+      <OpenCodeUsage usage={opencodeUsageData} status={opencodeUsageStatus} onrefresh={loadOpencodeUsage} />
+    </Modal>
+
     {#if error}
       <p role="alert" class="border-b border-neutral-900 px-4 py-2 text-center text-sm text-red-400">{error}</p>
     {/if}
@@ -426,6 +443,6 @@
     </div>
 
 
-    <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onhide={s => setHidden(s, true)} onrestore={s => setHidden(s, false)} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} onlimits={openLimits} ondownloads={() => { drawerOpen = false; downloadsOpen = true; }} />
+    <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onhide={s => setHidden(s, true)} onrestore={s => setHidden(s, false)} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} onlimits={openLimits} onopencode={openOpencodeUsage} ondownloads={() => { drawerOpen = false; downloadsOpen = true; }} />
   </div>
 {/if}
