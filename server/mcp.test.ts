@@ -327,6 +327,10 @@ test('представление агентов совпадает с tools/list
     new ExternalMcp(root).save([{name:'external', enabled:true, roles:['secretary'], type:'http', url:'https://example.com/?key=private-query', headers:{Authorization:'Bearer ${secret:KEY}'}}]);
     const view = await agentView(root, env.sessions, '1');
     expect(view.roles.secretary.tools).toEqual((await env.rpc(1, 'tools/list')).body.result.tools);
+    for (const role of ['secretary', 'specialist']) {
+      expect(view.roles[role].tools.find((tool: any) => tool.name === 'hide').description).toContain('DO NOT USE UNLESS TOLD TO');
+      expect(view.roles[role].prompt).toContain('только по прямой просьбе владельца');
+    }
     const text = JSON.stringify(view);
     expect(text).not.toContain((env.sessions as any).tokens.get(1));
     expect(text).not.toContain('secret-');
