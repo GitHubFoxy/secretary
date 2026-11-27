@@ -103,6 +103,8 @@ async function opencodeModels(): Promise<ModelDetails[]> {
         const updated = await request('session/set_config_option', { sessionId, configId: 'model', value: model });
         for (const option of updated.configOptions ?? []) if (option.id === 'effort') efforts[model] = (option.options ?? []).map((item: any) => item.value);
       }
+      // The listing session is empty: delete it so model lookups don't fill the OpenCode history.
+      await request('session/delete', { sessionId });
       return parseOpencodeModels(models, efforts);
     } finally { p.kill(); await reading.catch(() => {}); }
   } finally {

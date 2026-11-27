@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { claudeTurn } from './claude';
 import { codexTurn } from './codex';
 import { opencodeTurn } from './opencode';
+import { slashCommands } from './commands';
 import { harnessTiming, type Turn } from './harness';
 import { ensurePersona, SECRETARY_PROMPT } from './persona';
 
@@ -20,7 +21,7 @@ harnessTiming.interruptDeadlineMs = 300;
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 let folders = 0;
-function run(turn: Turn, text: string, { resumeId = null as string | null, folder = 'f', persona = false } = {}) {
+function run(turn: Turn, text: string, { resumeId = null as string | null, folder = 'f', persona = false, compact = false } = {}) {
   const dir = join(root, `${folder}-${++folders}`);
   mkdirSync(dir);
   if (persona) {
@@ -30,7 +31,7 @@ function run(turn: Turn, text: string, { resumeId = null as string | null, folde
   const interrupt = new AbortController(), stop = new AbortController();
   const log: string[] = [];
   const result = turn({
-    folder: dir, model: 'm', reasoning: null, resumeId, secretary: persona, systemPrompt: persona ? SECRETARY_PROMPT : undefined, interrupt: interrupt.signal, stop: stop.signal,
+    folder: dir, model: 'm', reasoning: null, resumeId, compact, secretary: persona, systemPrompt: persona ? SECRETARY_PROMPT : undefined, interrupt: interrupt.signal, stop: stop.signal,
     onSessionId: id => log.push(`session ${id}`),
     onEvent: event => { const answer = event.result || event.params?.item?.text || event.text; if (answer) log.push(answer); },
     onDispatching: () => log.push('dispatching'),
@@ -159,6 +160,25 @@ test('opencode без входа показывает команду для ав
 
 test('opencode: упавший harness отдаёт владельцу код выхода и конец stderr', async () => {
   await expect(run(opencodeTurn, 'CRASH').result).rejects.toThrow('OpenCode завершился с кодом 1: connection refused');
+});
+
+test('opencode: compact принимается и с обновлением сжатия, и без него', async () => {
+  for (const folder of ['f', 'quiet-compact']) {
+    const t = run(opencodeTurn, '/compact', { folder, resumeId: 'opencode-old', compact: true });
+    expect(await t.result).toBe(true);
+    expect(t.log).toContain('dispatching');
+    expect(t.log).toContain('accepted');
+    expect(t.calls().filter(call => call.text)).toEqual([{ text: '/compact', session: 'opencode-old' }]);
+  }
+});
+
+test('opencode: загрузка команд удаляет пустую сессию листинга', async () => {
+  const dir = join(root, `commands-${++folders}`);
+  mkdirSync(dir);
+  const commands = await slashCommands('opencode', dir);
+  expect(commands).toEqual([{ name: 'review', description: 'review changes' }]);
+  const calls = readFileSync(join(dir, 'calls.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(calls).toContainEqual({ delete: 'opencode-session' });
 });
 
 test('opencode: системный промпт едет файлом в OPENCODE_CONFIG_CONTENT поверх настроек владельца', async () => {

@@ -4,10 +4,10 @@ import { join } from 'node:path';
 import { prepareMcp } from './external-mcp';
 import { onAbort, readJsonLines, spawnHarness, type Turn, type TurnOptions } from './harness';
 
-// OpenCode reads its config from OPENCODE_CONFIG_CONTENT when the file config is absent or incomplete:
-// the adapter forces allow-all permissions (agents run without confirmations, like Claude with
-// --dangerously-skip-permissions) and passes the Secretary system prompt as an instructions file,
-// because systemPrompt must not touch the project's folder. Owner keys already in the variable survive.
+// OPENCODE_CONFIG_CONTENT merges over the owner's file config: the adapter forces allow-all permissions
+// (agents run without confirmations, like Claude with --dangerously-skip-permissions) and passes the
+// Secretary system prompt as an instructions file, because systemPrompt must not touch the project's
+// folder. Owner keys already in the variable survive.
 export async function opencodeLaunch(options: Pick<TurnOptions, 'systemPrompt' | 'mcpRoot' | 'mcpRole'>) {
   const args = ['opencode', 'acp'];
   const prepared = await prepareMcp(options.mcpRoot, options.mcpRole);
@@ -90,6 +90,7 @@ export const opencodeTurn: Turn = async (options, text, images) => {
       dispatched = true;
       onAbort(options.interrupt, () => harness.write({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId } }));
       const compact = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: '/compact' }] });
+      if (!accepted) { accepted = true; options.onAccepted(); }
       options.onEvent({ type: 'opencode_result', text: answer, stopReason: compact.stopReason, usage: compact.usage });
       return compact.stopReason === 'end_turn';
     }

@@ -25,21 +25,35 @@ export function parseOpencodeCommands(update: any): SlashCommand[] {
 }
 
 async function loadOpencode(cwd: string): Promise<SlashCommand[]> {
-  const p = Bun.spawn(['opencode', 'acp'], { cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', signal: AbortSignal.timeout(15000) });
+  const p = Bun.spawn(['opencode', 'acp'], { cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', env: { ...process.env }, signal: AbortSignal.timeout(15000) });
   const send = (message: object) => { p.stdin.write(JSON.stringify(message) + '\n'); p.stdin.flush(); };
   let id = 0;
-  send({ jsonrpc: '2.0', id: ++id, method: 'initialize', params: { protocolVersion: 1, clientCapabilities: {} } });
-  send({ jsonrpc: '2.0', id: ++id, method: 'session/new', params: { cwd, mcpServers: [] } });
-  let commands: SlashCommand[] | undefined;
+  const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
+  const request = (method: string, params: object): Promise<any> => new Promise((resolve, reject) => { pending.set(++id, { resolve, reject }); send({ jsonrpc: '2.0', id, method, params }); });
+  let found!: (commands: SlashCommand[]) => void, lost!: (error: Error) => void;
+  const ready = new Promise<SlashCommand[]>((resolve, reject) => { found = resolve; lost = reject; });
+  const reading = readJsonLines(p.stdout, message => {
+    if (message.method === 'session/update' && message.params?.update?.sessionUpdate === 'available_commands_update') found(parseOpencodeCommands(message.params.update));
+    if (message.id !== undefined && !message.method) {
+      const waiter = pending.get(message.id);
+      pending.delete(message.id);
+      if (message.error) waiter?.reject(new Error(message.error.message));
+      else waiter?.resolve(message.result);
+    }
+  });
+  reading.finally(() => {
+    const error = new Error('opencode не ответил на запрос команд');
+    for (const waiter of pending.values()) waiter.reject(error);
+    lost(error);
+  }).catch(() => {});
   try {
-    await readJsonLines(p.stdout, message => {
-      const update = message.params?.update;
-      if (message.method === 'session/update' && update?.sessionUpdate === 'available_commands_update') commands = parseOpencodeCommands(update);
-      if (commands) return false;
-    });
+    await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+    const session = await request('session/new', { cwd, mcpServers: [] });
+    const commands = await ready;
+    // The listing session is empty: delete it so command lookups don't fill the project's OpenCode history.
+    await request('session/delete', { sessionId: session.sessionId });
+    return commands;
   } finally { p.kill(); }
-  if (!commands) throw new Error('opencode не ответил на запрос команд');
-  return commands;
 }
 
 async function load(harness: string, cwd: string): Promise<SlashCommand[]> {

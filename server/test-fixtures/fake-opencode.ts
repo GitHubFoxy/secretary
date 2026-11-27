@@ -48,6 +48,10 @@ createInterface({ input: process.stdin }).on('line', line => {
     if (params.configId === 'model') model = params.value;
     return send({ id, result: { configOptions: configOptions() } });
   }
+  if (method === 'session/delete') {
+    appendFileSync('calls.log', JSON.stringify({ delete: params.sessionId }) + '\n');
+    return send({ id, result: {} });
+  }
   if (method === 'session/prompt') {
     const text: string = params.prompt[0].text;
     appendFileSync('calls.log', JSON.stringify({ text, session: params.sessionId }) + '\n');
@@ -55,7 +59,7 @@ createInterface({ input: process.stdin }).on('line', line => {
     if (process.cwd().includes('no-auth')) return send({ id, error: { code: -32000, message: 'auth_required' } });
     if (text.includes('HANG')) return;
     if (text === '/compact') {
-      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: params.sessionId, update: { sessionUpdate: 'compaction_update', status: 'completed' } } });
+      if (!process.cwd().includes('quiet-compact')) send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: params.sessionId, update: { sessionUpdate: 'compaction_update', status: 'completed' } } });
       return send({ id, result: { stopReason: 'end_turn', usage: {}, _meta: {} } });
     }
     if (text.includes('LONG')) {
