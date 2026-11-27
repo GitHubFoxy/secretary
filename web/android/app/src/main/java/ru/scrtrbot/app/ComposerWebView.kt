@@ -66,8 +66,9 @@ class ComposerWebView(context: Context, attrs: AttributeSet?) : CapacitorWebView
         val id = uri.path.orEmpty().removePrefix("/.secretary-ime/")
         val entry = if (request.method == "GET" && uri.query == null) files[id] else null
         val stream = try { entry?.first?.inputStream() } catch (_: Exception) { null }
-        return if (stream == null) WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", mapOf("Cache-Control" to "no-store"), ByteArrayInputStream(ByteArray(0)))
-        else WebResourceResponse(entry!!.second, null, 200, "OK", mapOf("Cache-Control" to "no-store"), stream)
+        val headers = mapOf("Cache-Control" to "no-store", "Content-Security-Policy" to "sandbox; default-src 'none'", "X-Content-Type-Options" to "nosniff")
+        return if (stream == null) WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", headers, ByteArrayInputStream(ByteArray(0)))
+        else WebResourceResponse(entry!!.second, null, 200, "OK", headers, stream)
     }
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
