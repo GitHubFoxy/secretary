@@ -32,8 +32,25 @@
   function choose(command) {
     let position;
     if (atMatch) { const start = cursor - atMatch[1].length - 1; value = value.slice(0, start) + command.value + ' ' + value.slice(cursor); position = start + command.value.length + 1; }
-    else { const start = cursor - slashMatch[1].length - 1, end = cursor + (/^[^\s/]*/.exec(value.slice(cursor))[0].length), text = `/${command.name}${command.name === 'compact' && !value.slice(0, start).trim() && !value.slice(end).trim() ? '' : ' '}`; value = value.slice(0, start) + text + value.slice(end); position = start + text.length; }
+    else {
+      const start = cursor - slashMatch[1].length - 1;
+      const end = cursor + /^[^\s/]*/.exec(value.slice(cursor))[0].length;
+      const before = value.slice(0, start), after = value.slice(end);
+      const standaloneCompact = command.name === 'compact' && !before.trim() && !after.trim();
+      const separator = standaloneCompact || /^\s/.test(after) ? '' : ' ';
+      const text = `/${command.name}${separator}`;
+      value = before + text + after;
+      position = start + text.length;
+    }
     menuClosed = true; oninput?.(value); tick().then(() => { area?.focus(); area?.setSelectionRange(position, position); cursor = position; });
+  }
+  function moveCursor(position) {
+    const tokenStart = pos => {
+      const match = /(?:^|\s)[/@]([^\s/@]*)$/.exec(value.slice(0, pos));
+      return match ? pos - match[1].length - 1 : -1;
+    };
+    if (tokenStart(position) !== tokenStart(cursor)) { menuClosed = false; selectedCommand = 0; }
+    cursor = position;
   }
   let imageError = $state(''), attachOpen = $state(false);
   let area = $state();
@@ -274,8 +291,8 @@
       bind:this={area}
       bind:value
       oninput={event => { cursor = event.target.selectionStart; menuClosed = false; selectedCommand = 0; oninput?.(event.target.value); }}
-      onclick={event => { cursor = event.target.selectionStart; }}
-      onkeyup={event => { cursor = event.target.selectionStart; }}
+      onclick={event => moveCursor(event.target.selectionStart)}
+      onkeyup={event => moveCursor(event.target.selectionStart)}
       onkeydown={keydown}
       onpaste={paste}
       placeholder="Напишите сообщение"
