@@ -1,6 +1,5 @@
 <script>
   import { onDestroy, onMount, tick } from 'svelte';
-  import { Capacitor } from '@capacitor/core';
   import Icon from './Icon.svelte';
   import { clipboardImages } from '../clipboard-images.js';
   import { receiveImeImage } from '../ime-image.js';
@@ -231,15 +230,19 @@
     if (!ime) return;
     ime.onmessage = ({data}) => {
       receiveImeImage(data, {
-        fetchFile: path => fetch(Capacitor.convertFileSrc(path)),
-        isFocused: () => document.activeElement === area && !disabled,
+        fetchFile: id => fetch(`/.secretary-ime/${encodeURIComponent(id)}`, {cache:'no-store'}),
+        isFocused: expected => String(sessionId) === expected && document.activeElement === area && !disabled,
         add: file => add([file]),
         done: id => ime.postMessage(JSON.stringify({action:'done', id})),
       }).catch(error => { imageError = error.message; });
     };
     return () => { ime.onmessage = null; ime.postMessage(JSON.stringify({action:'blur'})); };
   });
-  function imeFocus(action) { window.SecretaryIme?.postMessage(JSON.stringify({action})); }
+  function imeFocus(action) { window.SecretaryIme?.postMessage(JSON.stringify({action, session:String(sessionId)})); }
+  $effect(() => {
+    void sessionId;
+    if (area && document.activeElement === area) imeFocus('focus');
+  });
   function paste(e) {
     const files = clipboardImages(e.clipboardData);
     if (files.length) { e.preventDefault(); add(files); }
