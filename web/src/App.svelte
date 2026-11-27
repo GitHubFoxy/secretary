@@ -360,6 +360,7 @@
     {videoInterval}
     {voiceStatus}
     {assistantStatus}
+    {sessions}
     secretary={sessions.find(s => s.secretary)}
     bind:dirty={instructionsDirty}
     onback={() => (profileOpen = false)}

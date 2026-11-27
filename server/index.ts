@@ -66,6 +66,7 @@ function sameOrigin(request: Request, url: URL) {
 
 // The browser adapter. Every command gets exactly one answer with its requestId: `reply` with the result or `error`.
 const commands: Record<string, (cmd: any, send: (message: object) => void) => unknown> = {
+  schedules: () => ({ schedules: sessions.schedules.list(sessions.list().map(s => s.id)), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
   mcpList: () => ({ servers: externalMcp.list() }),
   mcpSave: cmd => { externalMcp.save(cmd.servers); },
   cameraState: (cmd, send) => { camera.set(send, cmd.enabled === true); },
