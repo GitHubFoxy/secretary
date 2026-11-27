@@ -193,7 +193,7 @@
       } catch {}
     }
     drafts.receive(msg, document.activeElement?.id === 'message');
-    if (msg.type === 'notesChanged' && msg.sessionId === selected) notesRevision++;
+    if (msg.type === 'notesChanged' && (msg.sessionId === selected || current?.secretary)) notesRevision++;
     if (msg.type === 'speech_start') speech.start();
     if (msg.type === 'speech_event' && voiceTimings.has(msg.voiceTimingId)) voiceTimings.get(msg.voiceTimingId).event ??= performance.now();
     if (msg.type === 'speech_audio' && speech.audio(msg.data, msg.rate)) {
@@ -383,7 +383,7 @@
       onsettings={openSettings}
     />
 
-    <Notes open={notesOpen} sessionId={selected} {connection} revision={notesRevision} oncount={count => notesCount = count} onclose={() => (notesOpen = false)} />
+    <Notes open={notesOpen} sessionId={selected} secretary={!!current?.secretary} {connection} revision={notesRevision} oncount={count => notesCount = count} onclose={() => (notesOpen = false)} />
 
     <Modal open={renameOpen} title="Переименовать чат" onclose={() => (renameOpen = false)}>
       <form class="flex flex-col gap-4" onsubmit={e => { e.preventDefault(); rename(); }}>
