@@ -126,3 +126,9 @@ test('OpenCode: повтор после rate-limit распознаётся ка
   expect(chatMessage(retry('provider.rate-limit'))).toBeNull();
   expect(usageLimit(retry('provider.auth'))).toBeNull();
 });
+
+test('OpenCode: обновления дочерних сессий показываются как обычные шаги', () => {
+  const child = { 'opencode/child-session': { id: 'ses_child', parentID: 'ses_1', depth: 1, title: 'Explore' } };
+  expect(chatMessage(opencodeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'ses_child:call_1', name: 'read', kind: 'read', title: 'Explore the codebase: src/app.ts', status: 'pending', rawInput: { path: 'src/app.ts' }, _meta: child })))
+    .toEqual({ kind: 'step', tool: 'read', summary: 'src/app.ts' });
+});

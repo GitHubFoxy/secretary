@@ -157,6 +157,10 @@ test('opencode без входа показывает команду для ав
   expect(t.log).not.toContain('accepted');
 });
 
+test('opencode: упавший harness отдаёт владельцу код выхода и конец stderr', async () => {
+  await expect(run(opencodeTurn, 'CRASH').result).rejects.toThrow('OpenCode завершился с кодом 1: connection refused');
+});
+
 test('opencode: системный промпт едет файлом в OPENCODE_CONFIG_CONTENT поверх настроек владельца', async () => {
   const previous = process.env.OPENCODE_CONFIG_CONTENT;
   process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ model: 'pag/custom', permissions: [] });

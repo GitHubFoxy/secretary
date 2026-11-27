@@ -1,5 +1,7 @@
 import { readJsonLines } from './harness';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 type ModelDetails = { id: string; aliases?: string[]; supportedReasoningEfforts: { reasoningEffort: string }[] };
 
@@ -69,7 +71,7 @@ export function parseOpencodeModels(models: string[], efforts: Record<string, st
 }
 
 async function opencodeModels(): Promise<ModelDetails[]> {
-  const root = (await new Response(Bun.spawn(['mktemp', '-d'], { stdout: 'pipe' }).stdout).text()).trim();
+  const root = mkdtempSync(join(tmpdir(), 'secretary-opencode-models-'));
   try {
     const p = Bun.spawn(['opencode', 'acp'], { cwd: root, stdin: 'pipe', stdout: 'pipe', stderr: 'ignore',
       env: { ...process.env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ permissions: [{ action: '*', resource: '*', effect: 'allow' }] }) },
@@ -104,7 +106,7 @@ async function opencodeModels(): Promise<ModelDetails[]> {
       return parseOpencodeModels(models, efforts);
     } finally { p.kill(); await reading.catch(() => {}); }
   } finally {
-    await Bun.$`rm -rf ${root}`.quiet().catch(() => {});
+    rmSync(root, { recursive: true, force: true });
   }
 }
 

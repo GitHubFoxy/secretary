@@ -2,30 +2,27 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prepareMcp } from './external-mcp';
-import { onAbort, readJsonLines, spawnHarness, type Turn } from './harness';
+import { onAbort, readJsonLines, spawnHarness, type Turn, type TurnOptions } from './harness';
 
 // OpenCode reads its config from OPENCODE_CONFIG_CONTENT when the file config is absent or incomplete:
 // the adapter forces allow-all permissions (agents run without confirmations, like Claude with
 // --dangerously-skip-permissions) and passes the Secretary system prompt as an instructions file,
 // because systemPrompt must not touch the project's folder. Owner keys already in the variable survive.
-export async function opencodeLaunch(options: Pick<import('./harness').TurnOptions, 'systemPrompt'>) {
+export async function opencodeLaunch(options: Pick<TurnOptions, 'systemPrompt' | 'mcpRoot' | 'mcpRole'>) {
   const args = ['opencode', 'acp'];
-  const { env } = await prepareMcp(options.mcpRoot, options.mcpRole);
-  let instructions: string[] = [];
-  try {
-    const existing = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? 'null');
-    if (Array.isArray(existing?.instructions)) instructions = existing.instructions.filter((v: unknown) => typeof v === 'string');
-  } catch {}
+  const prepared = await prepareMcp(options.mcpRoot, options.mcpRole);
+  const env = prepared.env;
+  let base: Record<string, unknown> = {};
+  try { base = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? 'null') ?? {}; } catch {}
+  if (!base || typeof base !== 'object') base = {};
+  let instructions = Array.isArray(base.instructions) ? base.instructions.filter((v: unknown): v is string => typeof v === 'string') : [];
   if (options.systemPrompt) {
     const file = join(tmpdir(), `secretary-opencode-${createHash('sha256').update(options.systemPrompt).digest('hex').slice(0, 16)}.md`);
     if (await Bun.file(file).text().catch(() => null) !== options.systemPrompt) await Bun.write(file, options.systemPrompt);
     if (!instructions.includes(file)) instructions = [...instructions, file];
   }
-  let base: Record<string, unknown> = {};
-  try { base = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? 'null') ?? {}; } catch {}
-  if (base && typeof base !== 'object') base = {};
   env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ...base, permissions: [{ action: '*', resource: '*', effect: 'allow' }], ...(instructions.length ? { instructions } : {}) });
-  return { args, env };
+  return { args, env, prepared };
 }
 
 type McpServer = { name: string } & (
@@ -33,21 +30,21 @@ type McpServer = { name: string } & (
   | { command: string; args: string[]; env: { name: string; value: string }[] }
 );
 
-export async function opencodeServers(options: import('./harness').TurnOptions): Promise<McpServer[]> {
+export function opencodeServers(options: Pick<TurnOptions, 'mcpUrl' | 'mcpToken'>, prepared: Awaited<ReturnType<typeof prepareMcp>>): McpServer[] {
   const servers: McpServer[] = [];
   if (options.mcpUrl) servers.push({ type: 'http', name: 'secretary', url: options.mcpUrl, headers: [{ name: 'Authorization', value: `Bearer ${options.mcpToken}` }] });
-  const { env, servers: external } = await prepareMcp(options.mcpRoot, options.mcpRole);
-  for (const { server, mapped } of external) {
-    if (server.type === 'stdio') servers.push({ name: server.name, command: server.command, args: server.args, env: Object.entries(mapped).map(([name, key]) => ({ name, value: env[key] ?? '' })) });
-    else servers.push({ type: 'http', name: server.name, url: server.url, headers: Object.entries(mapped).map(([name, key]) => ({ name, value: env[key] ?? '' })) });
+  for (const { server, mapped } of prepared.servers) {
+    const values = Object.entries(mapped).map(([name, key]) => ({ name, value: prepared.env[key] ?? '' }));
+    if (server.type === 'stdio') servers.push({ name: server.name, command: server.command, args: server.args, env: values });
+    else servers.push({ type: 'http', name: server.name, url: server.url, headers: values });
   }
   return servers;
 }
 
 export const opencodeTurn: Turn = async (options, text, images) => {
   if (options.interrupt.aborted) return false;
-  const { args, env } = await opencodeLaunch(options);
-  const servers = await opencodeServers(options);
+  const { args, env, prepared } = await opencodeLaunch(options);
+  const servers = opencodeServers(options, prepared);
   const harness = spawnHarness(args, options.folder, options, env);
   let id = 0, dispatched = false, accepted = false, answer = '', sessionId = '';
   let done!: (value: boolean) => void;
