@@ -1,7 +1,7 @@
 <script>
   import { onDestroy, tick } from 'svelte';
   import Icon from './Icon.svelte';
-  import { filterCommands } from '../slash-commands.js';
+  import { filterCommands, slashToken } from '../slash-commands.js';
   import AttachmentPopover from './AttachmentPopover.svelte';
   import AttachmentStrip from './AttachmentStrip.svelte';
   import VideoRecorderOverlay from './VideoRecorderOverlay.svelte';
@@ -13,8 +13,9 @@
   let commands = $state([]), commandError = $state(''), menuClosed = $state(false), selectedCommand = $state(0), requestToken = 0;
   let cursor = $state(0), references = $state([]), referenceError = $state(''), referenceToken = 0;
   let atMatch = $derived(/(?:^|\s)@([^\s@]*)$/.exec(value.slice(0, cursor)));
-  let matches = $derived(atMatch ? references : filterCommands(commands, value));
-  let menuOpen = $derived(!menuClosed && (!!atMatch || /^\/[^\s]*$/.test(value)));
+  let slashMatch = $derived(slashToken(value.slice(0, cursor)));
+  let matches = $derived(atMatch ? references : filterCommands(commands, value.slice(0, cursor)));
+  let menuOpen = $derived(!menuClosed && (!!atMatch || !!slashMatch));
   $effect(() => {
     const id = sessionId, query = atMatch?.[1], token = ++referenceToken;
     references = []; referenceError = '';
@@ -31,7 +32,7 @@
   function choose(command) {
     let position;
     if (atMatch) { const start = cursor - atMatch[1].length - 1; value = value.slice(0, start) + command.value + ' ' + value.slice(cursor); position = start + command.value.length + 1; }
-    else { value = `/${command.name}${command.name === 'compact' ? '' : ' '}`; position = value.length; }
+    else { const start = cursor - slashMatch[1].length - 1, end = cursor + (/^[^\s/]*/.exec(value.slice(cursor))[0].length), text = `/${command.name}${command.name === 'compact' && !value.slice(0, start).trim() && !value.slice(end).trim() ? '' : ' '}`; value = value.slice(0, start) + text + value.slice(end); position = start + text.length; }
     menuClosed = true; oninput?.(value); tick().then(() => { area?.focus(); area?.setSelectionRange(position, position); cursor = position; });
   }
   let imageError = $state(''), attachOpen = $state(false);
