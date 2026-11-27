@@ -27,6 +27,7 @@ import java.util.concurrent.Executors
 class ComposerWebView(context: Context, attrs: AttributeSet?) : CapacitorWebView(context, attrs) {
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
+    private var destroyed = false
     private var focused = false
     private var reply: JavaScriptReplyProxy? = null
     private var origin: Uri? = null
@@ -77,58 +78,64 @@ class ComposerWebView(context: Context, attrs: AttributeSet?) : CapacitorWebView
         EditorInfoCompat.setContentMimeTypes(outAttrs, (EditorInfoCompat.getContentMimeTypes(outAttrs).toList() + "image/*").distinct().toTypedArray())
         return InputConnectionCompat.createWrapper(connection, outAttrs) { content, flags, _ ->
             val uri = content.contentUri
-            if (!focused || !trusted() || uri.scheme != "content" || !content.description.hasMimeType("image/*")) return@createWrapper false
-            val target = reply ?: return@createWrapper false
-            val targetSession = session
-            val granted = flags and InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION != 0
-            try { if (granted) content.requestPermission() } catch (_: Exception) { return@createWrapper false }
-            try { worker.execute {
-                var file: File? = null
-                try {
-                    val mime = context.contentResolver.getType(uri) ?: throw IllegalArgumentException("Неизвестный формат изображения")
-                    require(mime.startsWith("image/") && !mime.contains('*')) { "Нужен файл изображения" }
-                    file = File.createTempFile("ime-", ".image", context.cacheDir)
-                    context.contentResolver.openInputStream(uri)?.use { input ->
-                        file.outputStream().use { output ->
-                            val buffer = ByteArray(65536)
-                            var size = 0L
-                            while (true) {
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                size += count
-                                require(size <= 100L * 1024 * 1024) { "Файл превышает 100 МБ" }
-                                output.write(buffer, 0, count)
+            if (uri.scheme != "content" || !content.description.hasMimeType("image/*")) return@createWrapper false
+            main.post {
+                if (destroyed || !focused || !trusted()) return@post
+                val target = reply ?: return@post
+                val targetSession = session
+                val granted = flags and InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION != 0
+                try { if (granted) content.requestPermission() } catch (_: Exception) { return@post }
+                try { worker.execute {
+                    var file: File? = null
+                    try {
+                        val mime = context.contentResolver.getType(uri) ?: throw IllegalArgumentException("Неизвестный формат изображения")
+                        require(mime.startsWith("image/") && !mime.contains('*')) { "Нужен файл изображения" }
+                        file = File.createTempFile("ime-", ".image", context.cacheDir)
+                        context.contentResolver.openInputStream(uri)?.use { input ->
+                            file.outputStream().use { output ->
+                                val buffer = ByteArray(65536)
+                                var size = 0L
+                                while (true) {
+                                    val count = input.read(buffer)
+                                    if (count < 0) break
+                                    size += count
+                                    require(size <= 100L * 1024 * 1024) { "Файл превышает 100 МБ" }
+                                    output.write(buffer, 0, count)
+                                }
+                                require(size > 0) { "Пустое изображение" }
                             }
-                            require(size > 0) { "Пустое изображение" }
+                        } ?: throw IllegalArgumentException("Файл недоступен")
+                        val ready = file
+                        val id = UUID.randomUUID().toString()
+                        main.post {
+                            if (destroyed || !focused || reply !== target || session != targetSession || !trusted()) ready.delete()
+                            else {
+                                files[id] = ready to mime
+                                main.postDelayed({ files.remove(id)?.first?.delete() }, 60000)
+                                try { target.postMessage(JSONObject().put("id", id).put("session", targetSession).put("type", mime).toString()) }
+                                catch (_: Exception) { files.remove(id)?.first?.delete() }
+                            }
                         }
-                    } ?: throw IllegalArgumentException("Файл недоступен")
-                    val ready = file
-                    val id = UUID.randomUUID().toString()
-                    main.post {
-                        if (!focused || reply !== target || session != targetSession || !trusted()) ready.delete()
-                        else {
-                            files[id] = ready to mime
-                            main.postDelayed({ files.remove(id)?.first?.delete() }, 60000)
-                            try { target.postMessage(JSONObject().put("id", id).put("session", targetSession).put("type", mime).toString()) }
-                            catch (_: Exception) { files.remove(id)?.first?.delete() }
-                        }
+                        file = null
+                    } catch (e: Exception) {
+                        main.post { if (!destroyed && focused) Toast.makeText(context, e.message ?: "Не удалось прочитать изображение", Toast.LENGTH_LONG).show() }
+                    } finally {
+                        file?.delete()
+                        if (granted) try { content.releasePermission() } catch (_: Exception) {}
                     }
-                    file = null
-                } catch (e: Exception) {
-                    main.post { Toast.makeText(context, e.message ?: "Не удалось прочитать изображение", Toast.LENGTH_LONG).show() }
-                } finally {
-                    file?.delete()
-                    if (granted) content.releasePermission()
+                } } catch (_: java.util.concurrent.RejectedExecutionException) {
+                    if (granted) try { content.releasePermission() } catch (_: Exception) {}
                 }
-            } } catch (_: java.util.concurrent.RejectedExecutionException) {
-                if (granted) content.releasePermission()
-                return@createWrapper false
             }
-            true
         }
     }
 
     override fun destroy() {
+        destroyed = true
+        focused = false
+        reply = null
+        files.values.forEach { it.first.delete() }
+        files.clear()
         worker.shutdown()
         super.destroy()
     }
