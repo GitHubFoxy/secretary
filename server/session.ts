@@ -107,6 +107,7 @@ export class Session {
     if (typeof text !== 'string') throw new Error('Некорректный текст сообщения');
     const images = validateImages(input);
     const files = validateFiles(inputFiles);
+    if (images.some(image => image.originalId && !files.some(file => file.id === image.originalId))) throw new Error('Оригинал изображения не найден среди вложений');
     if (!text.trim() && !images.length && !files.length) throw new Error('Сообщение пустое');
     if (this.deleted) throw new Error('Сессия удалена');
     this.stopped = false;

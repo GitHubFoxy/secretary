@@ -234,12 +234,14 @@
         const start = offset; offset += result.frames.length;
         return result.description?.replace('Кадры по порядку:', `Кадры по порядку, начиная с изображения ${start + 1}:`);
       }).filter(Boolean);
-      const frames = results.flatMap(result => result.frames);
-      const files = await Promise.all(results.filter(result => result.file).map(async result => {
+      const uploaded = await Promise.all(results.map(async result => {
+        if (!result.file) return null;
         const response = await fetch(`/files?name=${encodeURIComponent(result.file.name)}`, {method:'POST', headers:{'Content-Type':result.file.type || 'application/octet-stream'}, body:result.file});
         if (!response.ok) throw new Error(await response.text());
         return response.json();
       }));
+      const files = uploaded.filter(Boolean);
+      const frames = results.flatMap((result, index) => result.frames.map(frame => uploaded[index] ? {...frame, originalId:uploaded[index].id} : frame));
       if (JSON.stringify(frames).length > 29 * 1024 * 1024) throw new Error('Вложения слишком большие для отправки');
       await connection.request({type:'send', id:sent.sessionId, text:[sent.text, ...descriptions].filter(Boolean).join('\n\n'), images:frames, files, immediate});
       preparing = preparing.filter(item => item.id !== sent.id);

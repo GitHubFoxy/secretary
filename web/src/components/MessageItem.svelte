@@ -36,14 +36,14 @@
   }
   const fileUrl = file => `/files/${file.id}/${encodeURIComponent(file.name)}`;
 
-  // Фото и видео показываем из images, а их оригиналы лежат в files; остальные файлы остаются карточками.
-  // Оригиналы фото идут в том же порядке, что и их кадры в images.
   function shown(images) {
     const photos = images.filter(image => image.file && isImage(image.type));
+    const explicit = images.some(image => image.originalId);
     return images
       .filter(image => !image.file || !(isImage(image.type) || isVideo(image.type)))
-      .map(image => image.file || image.video ? image : { ...image, original: photos.shift() });
+      .map(image => image.file ? image : { ...image, original: image.originalId ? images.find(file => file.file && file.id === image.originalId) : !explicit && !image.video ? photos.shift() : undefined });
   }
+
 </script>
 
 {#snippet agent(a)}
@@ -106,7 +106,8 @@
       {#if m.images.some(image => image.video?.note)}
         {@const frame = m.images.find(image => image.video?.note)}
         {@const video = videoText(m.text)}
-        {@const src = videoFile ? fileUrl(videoFile) : frame.url}
+        {@const original = m.images.find(image => image.file && image.id === frame.originalId) || videoFile}
+        {@const src = original ? fileUrl(original) : frame.url}
         {#if src}
           <MediaPlayer {src} video round poster={'data:' + frame.type + ';base64,' + frame.data} title="Видеосообщение" />
         {:else}
@@ -126,7 +127,7 @@
                 </span>
               </span>
             {:else if image.video}
-              {@const src = videoFile ? fileUrl(videoFile) : image.url}
+              {@const src = image.original ? fileUrl(image.original) : videoFile ? fileUrl(videoFile) : image.url}
               <span class="relative my-2 block w-fit">
                 {#if src}
                   <MediaPlayer {src} video />
