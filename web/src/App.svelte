@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { notificationsEnabled, shouldNotify } from './browser-notifications.js';
   import { createConnection } from './connection.js';
+  import { createDrafts } from './drafts.js';
   import { mergeHistory, insertVoices, mergeApprovals } from './history.js';
   import { createInterruptFeedback } from './interrupt-feedback.js';
   import { createUpdateChecker } from './updates.js';
@@ -133,12 +134,12 @@
       if (!response.ok) throw new Error('Version unavailable');
       return (await response.json()).version;
     },
-    isBusy: () => Boolean(speaking || draftPending.size || images.length || preparing.some(item => !item.error) || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || notesOpen || renameOpen || settingsOpen || (profileOpen && instructionsDirty)),
+    isBusy: () => Boolean(speaking || drafts.busy || images.length || preparing.some(item => !item.error) || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || notesOpen || renameOpen || settingsOpen || (profileOpen && instructionsDirty)),
     reload: () => location.replace('/?update'),
   });
   const connection = createConnection({
     url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`,
-    onOpen: () => { connected = true; notesRevision++; for (const id of draftPending.keys()) savePending(id); if (selected !== null) { loadHistory(selected, false, historyLoaded); if (!draftPending.has(selected)) loadDraft(selected); } updates.check(); },
+    onOpen: () => { connected = true; notesRevision++; drafts.reconnect(); if (selected !== null) loadHistory(selected, false, historyLoaded); updates.check(); },
     onClose: () => { connected = false; for (const id of voiceTimings.keys()) finishVoiceTiming(id); speech.stop(); interruptFeedback.disconnect(); },
     onMessage: handleMessage,
   });
@@ -159,41 +160,14 @@
     } catch (err) { if (token === historyToken && !err.disconnected) error = err.message; }
     finally { if (token === historyToken) historyLoadingOlder = false; }
   }
-  const draftFrom = crypto.randomUUID();
-  const draftPending = new Map();
-  let draftToken = 0;
-  function savePending(id) {
-    const entry = draftPending.get(id);
-    if (!entry) return;
-    clearTimeout(entry.timer);
-    entry.timer = null;
-    connection.request({type:'draftSave', id, text:entry.text, from:draftFrom}).then(() => {
-      if (draftPending.get(id) === entry) draftPending.delete(id);
-    }).catch(err => { error = `Не удалось сохранить черновик: ${err.message}`; });
-  }
-  function scheduleDraft(text) {
-    if (selected === null) return;
-    const id = selected;
-    clearTimeout(draftPending.get(id)?.timer);
-    const entry = {text, timer:null};
-    draftPending.set(id, entry);
-    entry.timer = setTimeout(() => savePending(id), 500);
-    draftToken++;
-  }
-  async function loadDraft(id) {
-    const token = ++draftToken;
-    try {
-      const result = await connection.request({type:'draft', id});
-      if (selected === id && token === draftToken) message = result.text;
-    } catch (err) { if (!err.disconnected) error = err.message; }
-  }
+  const drafts = createDrafts({request: value => connection.request(value), selected: () => selected, setText: text => { message = text; }, onError: value => { error = value; }});
+  const scheduleDraft = drafts.schedule;
   function select(id) {
     if (selected !== id) {
-      if (selected !== null) savePending(selected);
+      if (selected !== null) drafts.save(selected);
       history = []; queue = []; message = '';
       selected = id;
-      if (draftPending.has(id)) { draftToken++; message = draftPending.get(id).text; }
-      else loadDraft(id);
+      drafts.select(id);
     }
     historyLoaded = false; historyHasMore = false; drawerOpen = false; loadHistory(id);
   }
@@ -221,7 +195,7 @@
         notification.onclick = () => { notification.close(); window.focus(); openSecretary(); };
       } catch {}
     }
-    if (msg.type === 'draftChanged' && msg.sessionId === selected && msg.from !== draftFrom && document.activeElement?.id !== 'message') { draftToken++; clearTimeout(draftPending.get(selected)?.timer); draftPending.delete(selected); message = msg.text; }
+    drafts.receive(msg, document.activeElement?.id === 'message');
     if (msg.type === 'notesChanged' && msg.sessionId === selected) notesRevision++;
     if (msg.type === 'speech_start') speech.start();
     if (msg.type === 'speech_event' && voiceTimings.has(msg.voiceTimingId)) voiceTimings.get(msg.voiceTimingId).event ??= performance.now();
