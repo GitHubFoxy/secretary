@@ -197,3 +197,20 @@ test('opencode: системный промпт едет файлом в OPENCOD
     else process.env.OPENCODE_CONFIG_CONTENT = previous;
   }
 });
+
+test('спавн: setsid идёт абсолютным путём, пропавшая папка даёт маркер для понятной ошибки', async () => {
+  const { spawnHarness } = await import('./harness');
+  const { friendlyErrorMessage } = await import('./chat');
+  const interrupt = new AbortController(), stop = new AbortController();
+  expect(() => spawnHarness(['echo', 'hi'], join(root, 'нет-такой-папки'), { interrupt: interrupt.signal, stop: stop.signal }))
+    .toThrow('SESSION_FOLDER_MISSING');
+  try {
+    spawnHarness(['echo', 'hi'], join(root, 'нет-такой-папки'), { interrupt: interrupt.signal, stop: stop.signal });
+  } catch (error) {
+    expect(friendlyErrorMessage(error)).toBe('Не удалось запустить агента: нет папки Session или программы на Host. Проверьте папку и установку, затем повторите.');
+  }
+  const dir = join(root, 'spawn-ok');
+  mkdirSync(dir, { recursive: true });
+  const harness = spawnHarness(['echo', 'hi'], dir, { interrupt: interrupt.signal, stop: stop.signal }, {});
+  await harness.close();
+});

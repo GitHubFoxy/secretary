@@ -87,6 +87,32 @@ export function usageLimitText(resetsAt?: number) {
   return 'Упёрся в лимит подписки' + (resetsAt === undefined ? ', время сброса неизвестно' : `, сброс в ${new Date(resetsAt).toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'})}`);
 }
 
+// Raw harness and infrastructure errors never reach the owner as-is: the event keeps them for logs and MCP,
+// the chat only shows a short Russian hint (what happened and what to do).
+export function friendlyErrorMessage(raw: unknown): string {
+  const text = raw instanceof Error ? raw.message : String(raw ?? '');
+  const clean = text.replace(/^(Error|SQLiteError)\s*:\s*/i, '').trim();
+  const lower = clean.toLowerCase();
+  if (!clean) return 'Неожиданная ошибка — попробуйте повторить. Если повторяется, загляните в журнал службы на Host.';
+  // Already actionable: keep author's hint, just drop the leading "Error:".
+  if (/на host выполните/i.test(clean)) return clean;
+  if (/агент завершился без подтверждения|не удалось сжать контекст/i.test(clean)) return clean;
+  if (/database is locked|database is busy|sqlite.*locked/.test(lower)) return 'База данных временно занята — попробуйте повторить через пару секунд.';
+  if (/session_folder_missing|posix_spawn|enoent|no such file or directory|executable not found/.test(lower)) return 'Не удалось запустить агента: нет папки Session или программы на Host. Проверьте папку и установку, затем повторите.';
+  const harness = /завершился с кодом|exit code|exited|harness|app-server/.test(lower);
+  if (harness) {
+    if (/not logged in|please run \/login|invalid api key|authentication|unauthorized|auth_required/.test(lower)) {
+      if (/claude/.test(lower)) return 'Claude Code не вошёл в подписку. На Host выполните: claude auth login';
+      if (/codex/.test(lower)) return 'Codex не вошёл в подписку. На Host выполните: codex login --device-auth';
+      if (/opencode/.test(lower)) return 'OpenCode требует входа. На Host выполните: opencode auth login';
+      return 'Агент не вошёл в подписку. Проверьте вход на Host и повторите.';
+    }
+    return 'Агент неожиданно завершился. Подробности — в журнале службы на Host, попробуйте повторить.';
+  }
+  if (/network|fetch failed|econnreset|etimedout|eai_again|enotfound|socket hang up|connection (reset|refused|timed out|aborted)|timed out|getaddrinfo|tls|ssl|\b50[234]\b|service unavailable|gateway|offline|dns/.test(lower)) return 'Похоже, пропала связь с провайдером. Проверьте интернет на Host и попробуйте повторить.';
+  return 'Неожиданная ошибка — попробуйте повторить. Если повторяется, загляните в журнал службы на Host.';
+}
+
 export function chatMessage(event: any, time = ''): ChatMessage | null {
   if (usageLimit(event)) return null;
   if (event?.type === 'usage_limit') return { kind: 'error', text: usageLimitText(event.resetsAt) };
@@ -141,16 +167,12 @@ export function chatMessage(event: any, time = ''): ChatMessage | null {
   }
   if (event?.type === 'result' && event.terminal_reason === 'aborted_streaming') return null;
   if (event?.type === 'result' && event.is_error) {
-    const text = event.result === 'Not logged in · Please run /login'
-      ? 'Claude Code не вошёл в подписку. На Host выполните: claude auth login'
-      : event.result || 'Неизвестная ошибка';
-    return { kind: 'error', text };
+    if (event.result === 'Not logged in · Please run /login') return { kind: 'error', text: 'Claude Code не вошёл в подписку. На Host выполните: claude auth login' };
+    return { kind: 'error', text: friendlyErrorMessage(event.result || 'Неизвестная ошибка') };
   }
   if (event?.method === 'turn/completed' && event.params?.turn?.status === 'interrupted') return null;
   if (event?.method === 'turn/completed' && event.params?.turn?.error) {
-    const error = event.params.turn.error;
-    const text = error.message || 'Неизвестная ошибка';
-    return { kind: 'error', text };
+    return { kind: 'error', text: friendlyErrorMessage(event.params.turn.error.message || 'Неизвестная ошибка') };
   }
   if (event?.type === 'model_switch') return { kind: 'switch', from: event.from, to: event.to };
   if (event?.type === 'agent_preview') return { kind: 'agent', text: '', preview: { url: event.url, expires_at: event.expires_at } };
@@ -165,7 +187,7 @@ export function chatMessage(event: any, time = ''): ChatMessage | null {
     if (report) return { kind: 'report', text: report[4], report: { id: Number(report[1]), harness: report[2], folder: report[3] } };
     return text || images.length || files.length ? { kind: 'user', text, images, ...(files.length ? {files} : {}) } : null;
   }
-  if (event?.type === 'error') return event.message ? { kind: 'error', text: String(event.message) } : null;
+  if (event?.type === 'error') return event.message ? { kind: 'error', text: friendlyErrorMessage(event.message) } : null;
   if (event?.type === 'cancelled' || event?.type === 'delivery_uncertain')
     return event.text || images.length || files.length ? { kind: event.type === 'cancelled' ? 'cancelled' : 'uncertain', text: event.text || '', images, ...(files.length ? {files} : {}) } : null;
   return null;
