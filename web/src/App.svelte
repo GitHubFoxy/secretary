@@ -337,9 +337,10 @@
     } catch (err) { limitsStatus = `Не удалось загрузить: ${err.message || err}`; }
   }
   function openLimits() {
-    drawerOpen = false; limitsOpen = true; limits = null; limitsStatus = 'Загрузка…'; opencodeLimits = null; opencodeLimitsStatus = 'Загрузка…';
-    loadLimits(); loadOpencodeLimits();
+    drawerOpen = false; limitsOpen = true; limits = null; limitsStatus = ''; opencodeLimits = null; opencodeLimitsStatus = '';
+    refreshLimits();
   }
+  function refreshLimits() { loadLimits(); loadOpencodeLimits(); }
   async function loadOpencodeLimits() {
     try {
       const response = await fetch('/opencode/limits');
@@ -464,14 +465,14 @@
       {#if current}{#key selected}<SettingsPanel session={current} {connected} onsave={saveSettings} onstop={stop} oncreate={createThread} onrename={openRename} />{/key}{/if}
     </Modal>
 
-    <Modal open={limitsOpen} title="Лимиты" onclose={() => (limitsOpen = false)}>
-      <div class="flex h-80 flex-col gap-6 overflow-y-auto">
-        <section class="flex flex-col gap-2">
-          <h3 class="text-sm font-medium text-neutral-100">Codex</h3>
+    <Modal open={limitsOpen} title="Лимиты" wide onrefresh={refreshLimits} onclose={() => (limitsOpen = false)}>
+      <div class="grid gap-3 sm:grid-cols-2 sm:gap-4">
+        <section class="flex min-w-0 flex-col gap-2 rounded-xl border border-neutral-800/80 bg-neutral-900/40 p-3 sm:gap-3 sm:p-4">
+          <h3 class="text-sm font-semibold text-neutral-100">Codex</h3>
           <CodexLimits {limits} status={limitsStatus} onrefresh={loadLimits} />
         </section>
-        <section class="flex flex-col gap-2">
-          <h3 class="text-sm font-medium text-neutral-100">OpenCode</h3>
+        <section class="flex min-w-0 flex-col gap-2 rounded-xl border border-neutral-800/80 bg-neutral-900/40 p-3 sm:gap-3 sm:p-4">
+          <h3 class="text-sm font-semibold text-neutral-100">OpenCode</h3>
           <OpenCodeLimits limits={opencodeLimits} status={opencodeLimitsStatus} onrefresh={loadOpencodeLimits} />
         </section>
       </div>

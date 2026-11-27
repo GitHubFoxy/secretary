@@ -1,4 +1,5 @@
 <script>
+  import LimitsSkeleton from './LimitsSkeleton.svelte';
   // Окна Go: rolling — 5 часов, weekly — неделя, monthly — месяц. Формат — из GET /opencode/limits.
   let { limits = null, status = '', onrefresh } = $props();
 
@@ -32,24 +33,28 @@
   });
 </script>
 
-{#if !limits}
-  <p class="break-words text-sm text-neutral-400" role="status">{status}</p>
+{#if !limits && !status}
+  <LimitsSkeleton rows={3} />
+{:else if !limits}
+  <div class="flex flex-col gap-2">
+    <p class="break-words text-sm text-red-400" role="alert">{status}</p>
+    <button type="button" class="btn-ghost self-start" onclick={onrefresh}>Повторить</button>
+  </div>
 {:else}
-  <div class="flex flex-col gap-3">
+  <div class="flex flex-col gap-3 sm:gap-4">
     {#each limits.windows as window}
-      <div class="flex flex-col gap-1.5">
-        <div class="flex items-baseline justify-between text-xs text-neutral-400">
-          <span>{names[window.id] ?? window.id}{#if window.limited} · <span class="text-red-400">лимит исчерпан</span>{/if}</span>
-          <span><span class="font-mono text-neutral-200">{left(window)}%</span> осталось</span>
+      <div class="flex min-w-0 flex-col gap-1.5 sm:gap-2">
+        <div class="flex items-baseline justify-between gap-3 text-sm">
+          <span class="truncate text-neutral-300">{names[window.id] ?? window.id}{#if window.limited} · <span class="text-red-400">лимит исчерпан</span>{/if}</span>
+          <span class="shrink-0 text-neutral-400"><span class="font-mono tabular-nums text-neutral-100">{left(window)}%</span> осталось</span>
         </div>
-        <div class="h-1.5 overflow-hidden rounded-full bg-neutral-800" role="meter" aria-label="Осталось" aria-valuemin="0" aria-valuemax="100" aria-valuenow={left(window)}>
+        <div class="h-2 overflow-hidden rounded-full bg-neutral-800" role="meter" aria-label="Осталось" aria-valuemin="0" aria-valuemax="100" aria-valuenow={left(window)}>
           <div class="h-full rounded-full {barClass(window.percent)}" style:width="{left(window)}%"></div>
         </div>
         {#if window.resetsAt}
-          <span class="text-xs text-neutral-500">До сброса: <span class="font-mono text-neutral-300">{countdown(window.resetsAt)}</span> · {resetText(window.resetsAt)}</span>
+          <p class="text-xs text-neutral-500">До сброса: <span class="font-mono tabular-nums text-neutral-300">{countdown(window.resetsAt)}</span> · {resetText(window.resetsAt)}</p>
         {/if}
       </div>
     {/each}
-    <button type="button" class="btn-ghost self-start" onclick={onrefresh}>Обновить</button>
   </div>
 {/if}
