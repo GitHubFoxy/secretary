@@ -3,7 +3,7 @@
   import Icon from './Icon.svelte';
   import { tick } from 'svelte';
   // bottomInset — высота поля ввода поверх списка (плюс клавиатура), под ней должны оставаться видимыми последние сообщения.
-  let { ondecide, messages = [], sessions = [], historyLoaded = false, connected = false, historyHasMore = false, historyLoadingOlder = false, onloadOlder, bottomInset = 0, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing, restoreDisabled = false } = $props();
+  let { ondecide, messages = [], sessions = [], historyLoaded = false, historyLoading = false, historyError = '', onretryHistory, connected = false, historyHasMore = false, historyLoadingOlder = false, onloadOlder, bottomInset = 0, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing, restoreDisabled = false } = $props();
   let scroller = $state();
   let content = $state();
   let pinned = $state(true);
@@ -36,8 +36,12 @@
 
 <div bind:this={scroller} onscroll={onscroll} class="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]" aria-live="polite">
   <div bind:this={content} class="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 pt-6" style="padding-bottom: {bottomInset + 24}px">
-    {#if messages.length === 0}
-      <p class="py-16 text-center text-sm text-neutral-600">{!connected ? 'Нет связи с Host. Повторное подключение…' : !historyLoaded ? 'Загрузка сообщений…' : 'Сообщений пока нет'}</p>
+    {#if historyLoading}
+      <p role="status" class="text-center text-sm text-neutral-400">Загрузка сообщений…</p>
+    {:else if historyError}
+      <p role="alert" class="text-center text-sm text-neutral-400">Не удалось загрузить сообщения: {historyError} <button class="underline" onclick={onretryHistory}>Повторить</button></p>
+    {:else if messages.length === 0}
+      <p class="py-16 text-center text-sm text-neutral-600">{!connected ? 'Нет связи с Host. Повторное подключение…' : historyLoaded ? 'Сообщений пока нет' : ''}</p>
     {/if}
     {#each messages as m (m.key)}
       <MessageItem {ondecide} message={m} {sessions} {connected} {restoreDisabled} {onselect} {onrestorePreparing} {onsendQueued} {onretryVoice} {oncancelVoice} />
