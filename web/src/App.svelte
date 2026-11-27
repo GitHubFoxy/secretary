@@ -54,7 +54,7 @@
     voiceMode = true; voiceKey++;
   }
   if ((overlay || new URLSearchParams(location.search).has('secretary')) && !cached?.sessions?.find(s => s.id === cached.selected)?.secretary) cached = null;
-  let historyLoading = false, historyError = '', historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyToken = 0;
+  let historyLoading = false, historyError = '', historyOlderError = '', historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyToken = 0;
   let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', connected = false;
   if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }
   let voiceMessages = [], voiceModel = '', voiceStatus = '', videoInterval = '1', ttsEngine = '', speaking = false, playing = false, speechFinishedId = null;
@@ -151,6 +151,7 @@
     const token = ++historyToken;
     historyLoadingOlder = older;
     historyLoading = !older;
+    if (older) historyOlderError = '';
     if (!older) historyError = '';
     try {
       const lastCursor = sync ? history.at(-1)?.cursor : undefined;
@@ -161,7 +162,7 @@
       if (older) historyHasMore = page.hasMore;
       else if (!sync || !merged.overlap) { historyHasMore = page.hasMore; historyVersion++; }
       historyLoaded = true;
-    } catch (err) { if (token === historyToken && !err.disconnected) { if (older) error = err.message; else historyError = err.message || 'Не удалось загрузить сообщения'; } }
+    } catch (err) { if (token === historyToken && !err.disconnected) { if (older) historyOlderError = err.message || 'Не удалось загрузить сообщения'; else historyError = err.message || 'Не удалось загрузить сообщения'; } }
     finally { if (token === historyToken) { historyLoadingOlder = false; historyLoading = false; } }
   }
   const drafts = createDrafts({request: value => connection.request(value), selected: () => selected, setText: text => { message = text; }, onError: value => { error = value; }});
@@ -173,7 +174,7 @@
       selected = id;
       drafts.select(id);
     }
-    historyLoaded = false; historyHasMore = false; drawerOpen = false; loadHistory(id);
+    historyLoaded = false; historyHasMore = false; historyOlderError = ''; drawerOpen = false; loadHistory(id);
   }
   let openSecretaryPending = false;
   function openSecretary() {
@@ -409,7 +410,7 @@
 
     <div bind:this={chatViewport} class="relative flex min-h-0 flex-1 flex-col">
       {#key historyVersion}
-        <MessageList ondecide={(kind, id, approved, password) => connection.request({type: `${kind}${approved ? 'Approve' : 'Reject'}`, [kind === 'skill' ? 'skillId' : 'sudoId']: id, ...(password ? {password} : {})})} {messages} {sessions} {historyLoaded} {historyLoading} {historyError} onretryHistory={() => loadHistory(selected, false, historyLoaded)} {connected} historyHasMore={historyHasMore} {historyLoadingOlder} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} oncancelVoice={item => voiceMessages = voiceMessages.filter(v => v.key !== item.key)} />
+        <MessageList ondecide={(kind, id, approved, password) => connection.request({type: `${kind}${approved ? 'Approve' : 'Reject'}`, [kind === 'skill' ? 'skillId' : 'sudoId']: id, ...(password ? {password} : {})})} {messages} {sessions} {historyLoaded} {historyLoading} {historyError} {historyOlderError} onretryHistory={() => loadHistory(selected, false, historyLoaded)} {connected} historyHasMore={historyHasMore} {historyLoadingOlder} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} oncancelVoice={item => voiceMessages = voiceMessages.filter(v => v.key !== item.key)} />
       {/key}
 
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
