@@ -100,7 +100,10 @@ for (const [name, turn] of [['claude', claudeTurn], ['codex', codexTurn]] as con
     expect(readFileSync(join(t.dir, 'AGENTS.md'), 'utf8')).toBe('## Предпочтения владельца\n\nЛюблю чай.\n\n');
     expect(readFileSync(join(t.dir, 'AGENTS.md.bak'), 'utf8')).toContain('Старый контракт.');
     expect(readFileSync(join(t.dir, 'CLAUDE.md'), 'utf8')).toBe('@AGENTS.md\n');
-    if (name === 'codex') expect(t.calls()[0].prompt).toContain('Люблю чай.');
+    if (name === 'codex') {
+      expect(t.calls()[0].prompt).toContain('Люблю чай.');
+      expect(t.calls()[0].model).toBe('m');
+    }
   });
 }
 

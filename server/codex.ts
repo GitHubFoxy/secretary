@@ -4,11 +4,11 @@ import { onAbort, readJsonLines, spawnHarness, type Turn } from './harness';
 import type { ThreadStartParams } from './protocol/v2/ThreadStartParams';
 import type { TurnStartParams } from './protocol/v2/TurnStartParams';
 
-export async function codexThreadStart(options: Pick<import('./harness').TurnOptions, 'folder' | 'secretary' | 'systemPrompt'>): Promise<ThreadStartParams> {
+export async function codexThreadStart(options: Pick<import('./harness').TurnOptions, 'folder' | 'secretary' | 'systemPrompt' | 'model'>): Promise<ThreadStartParams> {
   const agentsFile = Bun.file(`${options.folder}/AGENTS.md`);
   const preferences = options.secretary && await agentsFile.exists() ? await agentsFile.text() : undefined;
   const developerInstructions = [options.systemPrompt, preferences].filter(Boolean).join('\n\n') || undefined;
-  const start: ThreadStartParams = { cwd: options.folder, approvalPolicy: 'never', sandbox: 'danger-full-access', developerInstructions };
+  const start: ThreadStartParams = { model: options.model, cwd: options.folder, approvalPolicy: 'never', sandbox: 'danger-full-access', developerInstructions };
   return start;
 }
 
@@ -64,7 +64,7 @@ export const codexTurn: Turn = async (options, text, images) => {
     const start = await codexThreadStart(options);
     const { developerInstructions } = start;
     const thread = options.resumeId
-      ? await request('thread/resume', { threadId: options.resumeId, excludeTurns: true, developerInstructions })
+      ? await request('thread/resume', { threadId: options.resumeId, model: options.model, excludeTurns: true, developerInstructions })
       : await request('thread/start', start);
     options.onSessionId(thread.thread.id);
     if (options.interrupt.aborted) return false;
