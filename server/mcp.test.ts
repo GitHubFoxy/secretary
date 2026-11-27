@@ -328,7 +328,7 @@ test('представление агентов совпадает с tools/list
     const view = await agentView(root, env.sessions, '1');
     expect(view.roles.secretary.tools).toEqual((await env.rpc(1, 'tools/list')).body.result.tools);
     for (const role of ['secretary', 'specialist']) {
-      expect(view.roles[role].tools.find((tool: any) => tool.name === 'hide').description).toContain('DO NOT USE UNLESS TOLD TO');
+      expect(view.roles[role].tools.find((tool: any) => tool.name === 'hide').description).toMatch(/^Скрыть или вернуть (Worker|Specialist) в боковой панели только по прямой просьбе владельца\.$/);
       expect(view.roles[role].prompt).toContain('только по прямой просьбе владельца');
     }
     const text = JSON.stringify(view);

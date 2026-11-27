@@ -180,7 +180,7 @@ function toolDefinitions(isSecretary: boolean, harnesses: string[]) {
         return { ok: true };
       },
     ],
-    ['hide', `DO NOT USE UNLESS TOLD TO. Скрыть или вернуть ${target} в боковой панели только по прямой просьбе владельца.`, { id: { type: 'number' }, hidden: { type: 'boolean' } }, ['id', 'hidden'],
+    ['hide', `Скрыть или вернуть ${target} в боковой панели только по прямой просьбе владельца.`, { id: { type: 'number' }, hidden: { type: 'boolean' } }, ['id', 'hidden'],
       async ({ sessions, callerId }: ToolContext, args: any) => {
         const target = sessions.get(args.id);
         if (target.info.parent_id !== callerId) throw new Error('Нет доступа к чужой сессии');
