@@ -18,7 +18,32 @@ export function parseCodexSkills(result: any): SlashCommand[] {
   return commands;
 }
 
+export function parseOpencodeCommands(update: any): SlashCommand[] {
+  if (!Array.isArray(update?.availableCommands)) throw new Error('OpenCode не вернул список команд');
+  return update.availableCommands.filter((item: any) => typeof item.name === 'string' && item.name !== 'compact')
+    .map((item: any) => ({ name: item.name, description: item.description || '' }));
+}
+
+async function loadOpencode(cwd: string): Promise<SlashCommand[]> {
+  const p = Bun.spawn(['opencode', 'acp'], { cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', signal: AbortSignal.timeout(15000) });
+  const send = (message: object) => { p.stdin.write(JSON.stringify(message) + '\n'); p.stdin.flush(); };
+  let id = 0;
+  send({ jsonrpc: '2.0', id: ++id, method: 'initialize', params: { protocolVersion: 1, clientCapabilities: {} } });
+  send({ jsonrpc: '2.0', id: ++id, method: 'session/new', params: { cwd, mcpServers: [] } });
+  let commands: SlashCommand[] | undefined;
+  try {
+    await readJsonLines(p.stdout, message => {
+      const update = message.params?.update;
+      if (message.method === 'session/update' && update?.sessionUpdate === 'available_commands_update') commands = parseOpencodeCommands(update);
+      if (commands) return false;
+    });
+  } finally { p.kill(); }
+  if (!commands) throw new Error('opencode не ответил на запрос команд');
+  return commands;
+}
+
 async function load(harness: string, cwd: string): Promise<SlashCommand[]> {
+  if (harness === 'opencode') return loadOpencode(cwd);
   if (!['claude', 'codex'].includes(harness)) throw new Error('Неизвестный harness');
   const p = Bun.spawn(harness === 'claude' ? ['claude', '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'] : ['codex', 'app-server'], {cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', signal: AbortSignal.timeout(15000)});
   const send = (message: object) => { p.stdin.write(JSON.stringify(message) + '\n'); p.stdin.flush(); };
