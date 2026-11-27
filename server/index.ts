@@ -1,7 +1,7 @@
 import { agentView } from './observability';
 import { cameraRequests } from './camera';
 import { servePreview } from './preview';
-import { authorized, pair } from './auth';
+import { openAuth } from './auth';
 import { slashCommands } from './commands';
 import { findFiles } from './references';
 import { chatPage, chatMessage } from './chat';
@@ -23,6 +23,7 @@ import { Speech, warmSpeech, ttsEngine, setTtsEngine } from './speech';
 import { transcribe, voiceModel, setVoiceModel } from './voice';
 import { turnComplete } from './smart-turn';
 
+const auth = openAuth(secretaryFolder);
 const camera = cameraRequests(secretaryFolder);
 const memory = new Memory(secretaryFolder);
 const externalMcp = new ExternalMcp(secretaryFolder);
@@ -159,12 +160,12 @@ function handleRequest(request: Request, server: any) {
     if (url.pathname === '/pair' && request.method === 'POST') {
       if (!sameOrigin(request, url)) return new Response('Forbidden', { status: 403 });
       return request.formData().then(form => {
-        const token = pair(String(form.get('code') || ''), server.requestIP(request)?.address ?? 'unknown');
+        const token = auth.pair(String(form.get('code') || ''), server.requestIP(request)?.address ?? 'unknown');
         if (!token) return new Response('Неверный или просроченный код.', { status: 401 });
         return new Response(null, { status: 303, headers: { 'Location': '/', 'Set-Cookie': `secretary=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=31536000`, 'Cache-Control': 'no-store' } });
       }).catch(() => new Response('Invalid request', { status: 400 }));
     }
-    if (!authorized(request)) {
+    if (!auth.authorized(request)) {
       if (url.pathname === '/' && request.method === 'GET') return new Response(Bun.file(`${import.meta.dir}/login.html`), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
       return new Response('Unauthorized', { status: 401, headers: { 'Cache-Control': 'no-store' } });
     }
