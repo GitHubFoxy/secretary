@@ -18,7 +18,46 @@ export function parseCodexSkills(result: any): SlashCommand[] {
   return commands;
 }
 
+export function parseOpencodeCommands(update: any): SlashCommand[] {
+  if (!Array.isArray(update?.availableCommands)) throw new Error('OpenCode не вернул список команд');
+  return update.availableCommands.filter((item: any) => typeof item.name === 'string' && item.name !== 'compact')
+    .map((item: any) => ({ name: item.name, description: item.description || '' }));
+}
+
+async function loadOpencode(cwd: string): Promise<SlashCommand[]> {
+  const p = Bun.spawn(['opencode', 'acp'], { cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', env: { ...process.env }, signal: AbortSignal.timeout(15000) });
+  const send = (message: object) => { p.stdin.write(JSON.stringify(message) + '\n'); p.stdin.flush(); };
+  let id = 0;
+  const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
+  const request = (method: string, params: object): Promise<any> => new Promise((resolve, reject) => { pending.set(++id, { resolve, reject }); send({ jsonrpc: '2.0', id, method, params }); });
+  let found!: (commands: SlashCommand[]) => void, lost!: (error: Error) => void;
+  const ready = new Promise<SlashCommand[]>((resolve, reject) => { found = resolve; lost = reject; });
+  const reading = readJsonLines(p.stdout, message => {
+    if (message.method === 'session/update' && message.params?.update?.sessionUpdate === 'available_commands_update') found(parseOpencodeCommands(message.params.update));
+    if (message.id !== undefined && !message.method) {
+      const waiter = pending.get(message.id);
+      pending.delete(message.id);
+      if (message.error) waiter?.reject(new Error(message.error.message));
+      else waiter?.resolve(message.result);
+    }
+  });
+  reading.finally(() => {
+    const error = new Error('opencode не ответил на запрос команд');
+    for (const waiter of pending.values()) waiter.reject(error);
+    lost(error);
+  }).catch(() => {});
+  try {
+    await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+    const session = await request('session/new', { cwd, mcpServers: [] });
+    const commands = await ready;
+    // The listing session is empty: delete it so command lookups don't fill the project's OpenCode history.
+    await request('session/delete', { sessionId: session.sessionId });
+    return commands;
+  } finally { p.kill(); }
+}
+
 async function load(harness: string, cwd: string): Promise<SlashCommand[]> {
+  if (harness === 'opencode') return loadOpencode(cwd);
   if (!['claude', 'codex'].includes(harness)) throw new Error('Неизвестный harness');
   const p = Bun.spawn(harness === 'claude' ? ['claude', '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'] : ['codex', 'app-server'], {cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', signal: AbortSignal.timeout(15000)});
   const send = (message: object) => { p.stdin.write(JSON.stringify(message) + '\n'); p.stdin.flush(); };

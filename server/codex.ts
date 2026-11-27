@@ -1,30 +1,23 @@
-import { ExternalMcp } from './external-mcp';
+import { prepareMcp } from './external-mcp';
 import { slashCommands } from './commands';
 import { onAbort, readJsonLines, spawnHarness, type Turn } from './harness';
 import type { ThreadStartParams } from './protocol/v2/ThreadStartParams';
 import type { TurnStartParams } from './protocol/v2/TurnStartParams';
 
-export async function codexThreadStart(options: Pick<import('./harness').TurnOptions, 'folder' | 'secretary' | 'systemPrompt'>): Promise<ThreadStartParams> {
+export async function codexThreadStart(options: Pick<import('./harness').TurnOptions, 'folder' | 'secretary' | 'systemPrompt' | 'model'>): Promise<ThreadStartParams> {
   const agentsFile = Bun.file(`${options.folder}/AGENTS.md`);
   const preferences = options.secretary && await agentsFile.exists() ? await agentsFile.text() : undefined;
   const developerInstructions = [options.systemPrompt, preferences].filter(Boolean).join('\n\n') || undefined;
-  const start: ThreadStartParams = { cwd: options.folder, approvalPolicy: 'never', sandbox: 'danger-full-access', developerInstructions };
+  const start: ThreadStartParams = { model: options.model, cwd: options.folder, approvalPolicy: 'never', sandbox: 'danger-full-access', developerInstructions };
   return start;
 }
 
 export async function codexLaunch(options: import('./harness').TurnOptions) {
   const args = ['codex', 'app-server'];
   if (options.mcpUrl) args.push('-c', `mcp_servers.secretary.url="${options.mcpUrl}"`, '-c', `mcp_servers.secretary.http_headers.Authorization="Bearer ${options.mcpToken}"`);
-  const env = { ...process.env };
-  const servers = options.mcpRoot && options.mcpRole ? await new ExternalMcp(options.mcpRoot).resolve(options.mcpRole) : [];
-  for (const server of servers) {
+  const {env, servers} = await prepareMcp(options.mcpRoot, options.mcpRole);
+  for (const {server, mapped} of servers) {
     const prefix = `mcp_servers.${JSON.stringify(server.name)}`;
-    const values = server.type === 'stdio' ? server.env : server.headers;
-    const mapped = Object.fromEntries(Object.entries(values).map(([name, value]) => {
-      const key = `SECRETARY_MCP_${crypto.randomUUID().replaceAll('-', '')}`;
-      env[key] = value;
-      return [name, key];
-    }));
     if (server.type === 'stdio') {
       args.push('-c', `${prefix}.command=${JSON.stringify(process.execPath)}`, '-c', `${prefix}.args=${JSON.stringify([`${import.meta.dir}/mcp-exec.ts`, server.command, JSON.stringify(server.args), JSON.stringify(mapped)])}`, '-c', `${prefix}.env_vars=${JSON.stringify(Object.values(mapped))}`);
     } else {
@@ -71,7 +64,7 @@ export const codexTurn: Turn = async (options, text, images) => {
     const start = await codexThreadStart(options);
     const { developerInstructions } = start;
     const thread = options.resumeId
-      ? await request('thread/resume', { threadId: options.resumeId, excludeTurns: true, developerInstructions })
+      ? await request('thread/resume', { threadId: options.resumeId, model: options.model, excludeTurns: true, developerInstructions })
       : await request('thread/start', start);
     options.onSessionId(thread.thread.id);
     if (options.interrupt.aborted) return false;

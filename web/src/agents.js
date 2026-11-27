@@ -1,12 +1,14 @@
 export const harnesses = [
   { value: 'claude', title: 'Claude Code', accent: 'text-[#D97757]' },
   { value: 'codex', title: 'Codex', accent: 'text-neutral-100' },
+  { value: 'opencode', title: 'OpenCode', accent: 'text-sky-400' },
 ];
 export const harnessInfo = value => harnesses.find(h => h.value === value) ?? { value, title: value, accent: '' };
 
 // claude-opus-5-5 → Opus 5.5, gpt-6.2-sol → GPT 6.2 Sol: a word without vowels is an acronym. Dated snapshots drop the date.
+// OpenCode models carry the provider prefix (pag/beam-free → Beam Free).
 export function modelLabel(id) {
-  const parts = String(id).replace(/^claude-/, '').split('-').filter(part => !/^\d{8}$/.test(part));
+  const parts = String(id).replace(/^pag\//, '').replace(/^claude-/, '').split('-').filter(part => !/^\d{8}$/.test(part));
   const words = [];
   for (const part of parts) {
     if (/^\d+$/.test(part) && /^[\d.]+$/.test(words.at(-1) ?? '')) words[words.length - 1] += `.${part}`;
@@ -15,7 +17,6 @@ export function modelLabel(id) {
   return words.join(' ');
 }
 
-// Several switches in a row without messages between them show as one, from the first settings to the last.
 export function mergeSwitches(messages) {
   const merged = [];
   for (const message of messages) {

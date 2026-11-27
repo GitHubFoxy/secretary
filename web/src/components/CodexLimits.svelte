@@ -18,7 +18,6 @@
   let now = $state(Date.now());
   let lastRefresh = 0;
 
-  // Остаток считается от времени сброса, которое уже пришло от Codex, и не уходит ниже нуля.
   const countdown = seconds => {
     const left = Math.max(0, seconds * 1000 - now);
     const parts = [[Math.floor(left / (24 * 60 * minute)), 'д'], [Math.floor(left / (60 * minute)) % 24, 'ч'], [Math.floor(left / minute) % 60, 'м']];
@@ -34,7 +33,6 @@
     return byId.length ? byId : [limits.rateLimits];
   });
 
-  // Раз в минуту обновляем отсчёт. Если какой-то сброс уже прошёл, просим свежие лимиты, но не чаще раза в минуту.
   $effect(() => {
     const timer = setInterval(() => {
       now = Date.now();

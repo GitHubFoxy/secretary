@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { createConnection } from './connection.js';
 
-test('reconnects with backoff, refreshes on open and never resends a command', () => {
+test('reconnects with backoff, refreshes on open and never resends a command', async () => {
   const sockets = [], timers = [], calls = [];
   class FakeSocket {
     constructor(url) { this.url = url; this.readyState = 0; sockets.push(this); }
@@ -12,7 +12,7 @@ test('reconnects with backoff, refreshes on open and never resends a command', (
   const c = createConnection({ url:'ws://example/ws', WebSocketImpl:FakeSocket,
     schedule:(fn, delay) => { const t = {fn, delay}; timers.push(t); return t; }, cancel:t => { t.cancelled = true; },
     onOpen:() => c.request({type:'read', id:1, requestId:'r'}).catch(() => {}), onClose:() => {}, onMessage:() => {} });
-  c.connect(); c.request({type:'send'}).catch(e => expect(e.disconnected).toBe(true));
+  c.connect(); await expect(c.request({type:'send'})).rejects.toMatchObject({disconnected:true});
   sockets[0].open(); c.request({type:'send', text:'hello', requestId:'s'}).catch(() => {});
   sockets[0].close(); expect(timers[0].delay).toBe(1000);
   timers[0].fn(); sockets[1].close(); expect(timers[1].delay).toBe(2000);
@@ -46,4 +46,20 @@ test('ответ сопоставляется с запросом, осталь�
   expect(other).toEqual([{type:'sessions', sessions:[]}]);
   sockets[0].close();
   await expect(lost).rejects.toMatchObject({disconnected:true});
+});
+
+test('тайм-аут чтения отклоняет запрос и игнорирует поздний ответ', async () => {
+  const sockets = [], timers = [], other = [];
+  class FakeSocket { constructor() { this.readyState = 0; sockets.push(this); } send() {} close() { this.readyState = 3; this.onclose?.(); } }
+  const c = createConnection({url:'ws://test', WebSocketImpl:FakeSocket, schedule:(fn, delay) => { const t = {fn, delay}; timers.push(t); return t; }, cancel:t => { t.cancelled = true; }, onOpen:()=>{}, onClose:()=>{}, onMessage:m => other.push(m)});
+  c.connect(); sockets[0].readyState = 1; sockets[0].onopen();
+  const pending = c.request({type:'read', requestId:'late'}, 15000);
+  expect(timers[0].delay).toBe(15000);
+  timers[0].fn(); await expect(pending).rejects.toThrow('Время ожидания истекло');
+  sockets[0].onmessage({data:JSON.stringify({type:'reply', requestId:'late'})});
+  expect(other).toEqual([]);
+  const next = c.request({type:'read', requestId:'next'}, 15000);
+  sockets[0].onmessage({data:JSON.stringify({type:'reply', requestId:'next'})});
+  await next; expect(timers[1].cancelled).toBe(true);
+  c.stop();
 });

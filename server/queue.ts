@@ -62,7 +62,6 @@ export class MessageQueue {
     this.resolve(batch, item => ({ type: item.system ? 'system' : 'user', message: { role: 'user', content: item.text }, images: item.images, files: item.files }));
   }
 
-  // Returns how many of the batch were still waiting.
   drop(batch: Message[], outcome: Unsent | ((item: Message) => Unsent)) {
     const outcomeOf = typeof outcome === 'function' ? outcome : () => outcome;
     return this.resolve(batch, item => ({ type: item.system ? 'system' : outcomeOf(item), text: item.text, images: item.images, files: item.files }));

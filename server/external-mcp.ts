@@ -40,6 +40,20 @@ export class ExternalMcp {
   }
 }
 
+export async function prepareMcp(root: string | undefined, role: Role | undefined) {
+  const env = { ...process.env };
+  const servers = root && role ? await new ExternalMcp(root).resolve(role) : [];
+  return { env, servers: servers.map(server => {
+    const values = server.type === 'stdio' ? server.env : server.headers;
+    const mapped = Object.fromEntries(Object.entries(values).map(([name, value]) => {
+      const key = `SECRETARY_MCP_${crypto.randomUUID().replaceAll('-', '')}`;
+      env[key] = value;
+      return [name, key];
+    }));
+    return {server, mapped};
+  }) };
+}
+
 function validate(input: any): McpServer {
   if (!input || typeof input !== 'object' || typeof input.name !== 'string' || !/^[A-Za-z0-9_-]+$/.test(input.name) || input.name === 'secretary' || typeof input.enabled !== 'boolean' || !Array.isArray(input.roles) || input.roles.some((r: unknown) => r !== 'secretary' && r !== 'specialist') || new Set(input.roles).size !== input.roles.length) throw new Error('Некорректная запись MCP');
   const values = (v: any, env: boolean) => {

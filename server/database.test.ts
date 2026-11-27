@@ -74,3 +74,21 @@ test('индексирует старые и новые сообщения, ис
     reader.close(); db.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+
+test('поисковый индекс перестраивается при смене версии проекции и сохраняет новые записи', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'secretary-search-version-'));
+  const path = join(dir, 'db');
+  try {
+    let db = openDatabase(path);
+    writeEvent(db, 1, {type:'result', result:'сохранённое сообщение'});
+    db.run('DELETE FROM message_search');
+    db.run('UPDATE search_projection SET version = 0');
+    db.close();
+    db = openDatabase(path);
+    expect(recall(db, 1, 'сохранённое')).toHaveLength(1);
+    writeEvent(db, 1, {type:'result', result:'новое сообщение'});
+    expect(recall(db, 1, 'новое')).toHaveLength(1);
+    db.close();
+  } finally { rmSync(dir, {recursive:true, force:true}); }
+});

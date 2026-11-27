@@ -93,17 +93,14 @@ test('Specialist изолирован на своих детях, наследу
   const childId = childRes.data.id;
   expect(env.sessions.get(childId).info).toMatchObject({ parent_id: s1, folder: '/tmp/a' });
 
-  // Specialist sees only its own children and cannot touch Secretary Agent or another Specialist.
   expect((await env.callTool(s1, 'list')).data.sessions.map((s: any) => s.id)).toEqual([childId]);
   expect((await env.callTool(s1, 'send', { id: s2, message: 'чужой' })).isError).toBe(true);
   expect((await env.callTool(s1, 'read', { id: 1 })).isError).toBe(true);
   expect((await env.callTool(s1, 'stop', { id: s2 })).isError).toBe(true);
 
-  // Level-2 child is rejected at HTTP level.
   const denied = await env.rpc(childId, 'tools/list');
   expect(denied.status).toBe(401);
 
-  // Stopping Specialist from Secretary Agent cascades to its running child.
   await env.callTool(1, 'stop', { id: s1 });
   expect(env.calls[0].options.stop.aborted).toBe(true);
   expect(env.calls[2].options.stop.aborted).toBe(true);
@@ -330,9 +327,36 @@ test('представление агентов совпадает с tools/list
     new ExternalMcp(root).save([{name:'external', enabled:true, roles:['secretary'], type:'http', url:'https://example.com/?key=private-query', headers:{Authorization:'Bearer ${secret:KEY}'}}]);
     const view = await agentView(root, env.sessions, '1');
     expect(view.roles.secretary.tools).toEqual((await env.rpc(1, 'tools/list')).body.result.tools);
+    for (const role of ['secretary', 'specialist']) {
+      expect(view.roles[role].tools.find((tool: any) => tool.name === 'hide').description).toMatch(/^Скрыть или вернуть (Worker|Specialist) в боковой панели только по прямой просьбе владельца\.$/);
+      expect(view.roles[role].prompt).toContain('только по прямой просьбе владельца');
+    }
     const text = JSON.stringify(view);
     expect(text).not.toContain((env.sessions as any).tokens.get(1));
     expect(text).not.toContain('secret-');
     expect(text).not.toContain('private-query');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
+test('запрос секрета через MCP завершается после подтверждения владельца', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'approval-mcp-'));
+  const env = setup(root); servers.push(env.server);
+  try {
+    const waiting = env.callTool(1, 'request_secret', {name:'EXAMPLE', reason:'проверка'});
+    let settled = false;
+    void waiting.then(() => { settled = true; });
+    let request: any;
+    for (let n = 0; n < 100 && !request; n++) {
+      request = env.sessions.get(1).events().find((event: any) => event.type === 'secret_request');
+      if (!request) await Bun.sleep(5);
+    }
+    expect(request?.id).toBeDefined();
+    expect(settled).toBe(false);
+    await env.sessions.approvals.secrets.approve(request.id, 'example-value');
+    const result = await waiting;
+    expect(result.isError).toBe(false);
+    expect(result.data).toBe('Секрет EXAMPLE сохранён');
+    expect(env.sessions.get(1).events().find((event: any) => event.type === 'secret_result')).toMatchObject({id:request.id, status:'saved'});
+    expect(JSON.stringify(env.sessions.get(1).events())).not.toContain('example-value');
   } finally { await rm(root, {recursive:true, force:true}); }
 });

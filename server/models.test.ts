@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { parseClaudeModels } from './models';
+import { parseClaudeModels, parseOpencodeModels } from './models';
 
 test('читает модели и доступные уровни из ответа Claude Code', () => {
   const output = JSON.stringify({type:'control_response', response:{subtype:'success', request_id:'models', response:{models:[
@@ -15,4 +15,15 @@ test('читает модели и доступные уровни из отве
   expect(() => parseClaudeModels('')).toThrow();
   expect(() => parseClaudeModels(JSON.stringify({type:'control_response', response:{subtype:'success',request_id:'models',response:{models:[]}}}))).toThrow();
   expect(() => parseClaudeModels(JSON.stringify({type:'control_response', response:{subtype:'success',request_id:'models',response:{models:[{value:'legacy', displayName:'Legacy'}]}}}))).toThrow();
+});
+
+test('уровни effort у моделей OpenCode разные, default не уровень', () => {
+  expect(parseOpencodeModels(
+    ['pag/beam-free', 'pag/deepseek-v4-pro', 'pag/unknown'],
+    { 'pag/beam-free': ['low', 'medium', 'high', 'xhigh', 'max', 'default'], 'pag/deepseek-v4-pro': ['high', 'max', 'default'] },
+  )).toEqual([
+    { id: 'pag/beam-free', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'medium' }, { reasoningEffort: 'high' }, { reasoningEffort: 'xhigh' }, { reasoningEffort: 'max' }] },
+    { id: 'pag/deepseek-v4-pro', supportedReasoningEfforts: [{ reasoningEffort: 'high' }, { reasoningEffort: 'max' }] },
+    { id: 'pag/unknown', supportedReasoningEfforts: [] },
+  ]);
 });

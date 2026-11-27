@@ -1,21 +1,15 @@
-import { ExternalMcp } from './external-mcp';
+import { prepareMcp } from './external-mcp';
 import { onAbort, readJsonLines, spawnHarness, type Turn } from './harness';
 
 export async function claudeLaunch(options: import('./harness').TurnOptions) {
   const args = ['claude', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', '--model', options.model];
   if (options.reasoning) args.push('--effort', options.reasoning);
   if (options.resumeId) args.push('--resume', options.resumeId);
-  const servers = options.mcpRoot && options.mcpRole ? await new ExternalMcp(options.mcpRoot).resolve(options.mcpRole) : [];
-  const env = { ...process.env };
+  const {env, servers} = await prepareMcp(options.mcpRoot, options.mcpRole);
   const configs: Record<string, object> = {};
-  for (const server of servers) {
-    const values = server.type === 'stdio' ? server.env : server.headers;
-    const mapped = Object.fromEntries(Object.entries(values).map(([name, value]) => {
-      const key = `SECRETARY_MCP_${crypto.randomUUID().replaceAll('-', '')}`;
-      env[key] = value;
-      return [name, `\${${key}}`];
-    }));
-    configs[server.name] = server.type === 'stdio' ? { type: 'stdio', command: server.command, args: server.args, env: mapped } : { type: 'http', url: server.url, headers: mapped };
+  for (const {server, mapped} of servers) {
+    const values = Object.fromEntries(Object.entries(mapped).map(([name, key]) => [name, `\${${key}}`]));
+    configs[server.name] = server.type === 'stdio' ? { type: 'stdio', command: server.command, args: server.args, env: values } : { type: 'http', url: server.url, headers: values };
   }
   if (options.mcpUrl) configs.secretary = { type: 'http', url: options.mcpUrl, headers: { Authorization: `Bearer ${options.mcpToken}` } };
   if (Object.keys(configs).length) args.push('--mcp-config', JSON.stringify({ mcpServers: configs }));

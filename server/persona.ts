@@ -44,6 +44,7 @@ export const SECRETARY_PROMPT = `# Secretary Agent
 - Управляй расписаниями через \`schedule_add\`, \`schedule_list\`, \`schedule_remove\`; cron использует часовой пояс Host.
 - Если команда требует sudo и без пароля не выходит, вызови \`sudo_run\` с командой и причиной; не проси пароль в чате.
 
+- Используй \`hide\` для скрытия или возвращения Specialists только по прямой просьбе владельца.
 - Для управления Specialists подключён MCP-сервер \`secretary\` (\`list\`, \`send\`, \`read\`, \`stop\`, \`send_file\`, \`report_issue\`).
 - Для публикации HTML на 24 часа вызови \`publish_html\` с путём к файлу или каталогу с index.html; ссылка доступна всем, кто её получил.
 - Чтобы владелец увидел файл с Host (картинку, видео, аудио, документ), вызови \`send_file\` с путём к файлу: файл появится в чате, и владелец сможет его скачать.
@@ -78,7 +79,7 @@ export const SPECIALIST_PROMPT = `# Specialist
   - для важных изменений подключай отдельного Worker на ревью;
   - сам проверяй результат и сливай готовые ветки; затем удали worktree через \`git worktree remove\` без \`--force\` и ветку через \`git branch -d\`. При ошибке оставь данные и сообщи путь.
 - Workers видны владельцу в боковой панели под тобой, поэтому давай им короткие понятные имена по сути задачи (например, \`oauth-логин\`, \`ревью-oauth\`, \`поиск-тарифов\`).
-- Скрывай завершённых Workers через \`hide\` с \`hidden: true\`; при необходимости возвращай их с \`hidden: false\`.
+- Используй \`hide\` для скрытия или возвращения Workers только по прямой просьбе владельца.
 - Ставь Worker чёткую цель и границы. Не оставляй висящих Workers без присмотра.
 - Если не указаны конкретные harness, модель или reasoning, оставляй настройки по умолчанию (при необходимости посмотри доступные варианты в \`list\`).
 
@@ -114,7 +115,6 @@ export function specialistPrompt(folder: string) {
   return instructions ? `${SPECIALIST_PROMPT}\n${instructions}\n` : SPECIALIST_PROMPT;
 }
 
-// Harness, model and reasoning for new Specialists; without the file they take the Secretary Agent's.
 export function specialistModel(folder: string): { harness: string; model: string; reasoning: string | null } | null {
   const file = `${folder}/specialist-model.json`;
   return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : null;

@@ -2,7 +2,10 @@
   import { onMount, tick } from 'svelte';
   import { notificationsEnabled, shouldNotify } from './browser-notifications.js';
   import { createConnection } from './connection.js';
-  import { mergeHistory, insertVoices } from './history.js';
+  import { createDelivery } from './delivery.js';
+  import { createDrafts } from './drafts.js';
+  import { createCamera } from './camera.js';
+  import { mergeHistory, insertVoices, mergeApprovals } from './history.js';
   import { createInterruptFeedback } from './interrupt-feedback.js';
   import { createUpdateChecker } from './updates.js';
   import { keyboardInset } from './viewport.js';
@@ -51,7 +54,7 @@
     voiceMode = true; voiceKey++;
   }
   if ((overlay || new URLSearchParams(location.search).has('secretary')) && !cached?.sessions?.find(s => s.id === cached.selected)?.secretary) cached = null;
-  let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyToken = 0;
+  let historyLoading = false, historyError = '', historyOlderError = '', historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyToken = 0;
   let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', connected = false;
   if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }
   let voiceMessages = [], voiceModel = '', voiceStatus = '', videoInterval = '1', ttsEngine = '', speaking = false, playing = false, speechFinishedId = null;
@@ -123,7 +126,7 @@
   let profileOpen = false, downloadsOpen = false, instructionsDirty = false;
   let notesOpen = false, notesRevision = 0, notesCount = 0;
   let interruptStates = {};
-  const deliveries = new Map();
+  const delivery = createDelivery({request: value => connection.request(value), fetch: (...args) => fetch(...args), onChange: items => { preparing = items; }, revoke: url => URL.revokeObjectURL(url)});
   const interruptFeedback = createInterruptFeedback({onChange: (id, state) => { interruptStates = {...interruptStates, [id]:state}; }});
   const updates = createUpdateChecker({
     currentVersion: __SECRETARY_BUILD_ID__,
@@ -133,12 +136,12 @@
       if (!response.ok) throw new Error('Version unavailable');
       return (await response.json()).version;
     },
-    isBusy: () => Boolean(speaking || draftPending.size || images.length || preparing.some(item => !item.error) || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || notesOpen || renameOpen || settingsOpen || (profileOpen && instructionsDirty)),
+    isBusy: () => Boolean(speaking || drafts.busy || images.length || preparing.some(item => !item.error) || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || notesOpen || renameOpen || settingsOpen || (profileOpen && instructionsDirty)),
     reload: () => location.replace('/?update'),
   });
   const connection = createConnection({
     url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`,
-    onOpen: () => { connected = true; notesRevision++; for (const id of draftPending.keys()) savePending(id); if (selected !== null) { loadHistory(selected, false, historyLoaded); if (!draftPending.has(selected)) loadDraft(selected); } updates.check(); },
+    onOpen: () => { connected = true; notesRevision++; drafts.reconnect(); camera.reconnect(); if (selected !== null) loadHistory(selected, false, historyLoaded); updates.check(); },
     onClose: () => { connected = false; for (const id of voiceTimings.keys()) finishVoiceTiming(id); speech.stop(); interruptFeedback.disconnect(); },
     onMessage: handleMessage,
   });
@@ -147,55 +150,31 @@
   async function loadHistory(id, older = false, sync = false) {
     const token = ++historyToken;
     historyLoadingOlder = older;
+    historyLoading = !older;
+    if (older) historyOlderError = '';
+    if (!older) historyError = '';
     try {
       const lastCursor = sync ? history.at(-1)?.cursor : undefined;
-      const page = await connection.request({type:'read', id, before: older ? history[0]?.cursor : undefined});
+      const page = await connection.request({type:'read', id, before: older ? history[0]?.cursor : undefined}, 15000);
       if (token !== historyToken) return;
       const merged = older ? {messages: [...page.messages, ...history], overlap: true} : mergeHistory(history, page.messages, lastCursor);
       history = merged.messages; queue = page.queue;
       if (older) historyHasMore = page.hasMore;
       else if (!sync || !merged.overlap) { historyHasMore = page.hasMore; historyVersion++; }
       historyLoaded = true;
-    } catch (err) { if (token === historyToken && !err.disconnected) error = err.message; }
-    finally { if (token === historyToken) historyLoadingOlder = false; }
+    } catch (err) { if (token === historyToken && !err.disconnected) { if (older) historyOlderError = err.message || 'Не удалось загрузить сообщения'; else historyError = err.message || 'Не удалось загрузить сообщения'; } }
+    finally { if (token === historyToken) { historyLoadingOlder = false; historyLoading = false; } }
   }
-  const draftFrom = crypto.randomUUID();
-  const draftPending = new Map();
-  let draftToken = 0;
-  function savePending(id) {
-    const entry = draftPending.get(id);
-    if (!entry) return;
-    clearTimeout(entry.timer);
-    entry.timer = null;
-    connection.request({type:'draftSave', id, text:entry.text, from:draftFrom}).then(() => {
-      if (draftPending.get(id) === entry) draftPending.delete(id);
-    }).catch(err => { error = `Не удалось сохранить черновик: ${err.message}`; });
-  }
-  function scheduleDraft(text) {
-    if (selected === null) return;
-    const id = selected;
-    clearTimeout(draftPending.get(id)?.timer);
-    const entry = {text, timer:null};
-    draftPending.set(id, entry);
-    entry.timer = setTimeout(() => savePending(id), 500);
-    draftToken++;
-  }
-  async function loadDraft(id) {
-    const token = ++draftToken;
-    try {
-      const result = await connection.request({type:'draft', id});
-      if (selected === id && token === draftToken) message = result.text;
-    } catch (err) { if (!err.disconnected) error = err.message; }
-  }
+  const drafts = createDrafts({request: value => connection.request(value), selected: () => selected, setText: text => { message = text; }, onError: value => { error = value; }});
+  const scheduleDraft = drafts.schedule;
   function select(id) {
     if (selected !== id) {
-      if (selected !== null) savePending(selected);
+      if (selected !== null) drafts.save(selected);
       history = []; queue = []; message = '';
       selected = id;
-      if (draftPending.has(id)) { draftToken++; message = draftPending.get(id).text; }
-      else loadDraft(id);
+      drafts.select(id);
     }
-    historyLoaded = false; historyHasMore = false; drawerOpen = false; loadHistory(id);
+    historyLoaded = false; historyHasMore = false; historyOlderError = ''; drawerOpen = false; loadHistory(id);
   }
   let openSecretaryPending = false;
   function openSecretary() {
@@ -204,24 +183,16 @@
     openSecretaryPending = !secretary;
     if (secretary) select(secretary.id);
   }
-  let cameraCapture = null;
-  function setCamera(capture) {
-    cameraCapture = capture;
-    if (connected) connection.request({type:'cameraState', enabled:!!capture}).catch(() => {});
-  }
+  const camera = createCamera({request: value => connection.request(value), connected: () => connected});
   function handleMessage(msg) {
-    if (msg.type === 'camera_frame') {
-      try { connection.request({type:'cameraReply', id:msg.id, image:cameraCapture ? cameraCapture() : undefined, error:cameraCapture ? undefined : 'Камера не включена'}).catch(() => {}); }
-      catch (err) { connection.request({type:'cameraReply', id:msg.id, error:err.message}).catch(() => {}); }
-      return;
-    }
+    if (camera.receive(msg)) return;
     if (msg.type === 'secretary_reply' && shouldNotify({enabled:notificationsEnabled(), permission:globalThis.Notification?.permission, text:msg.text, visibility:document.visibilityState, native:Capacitor.isNativePlatform()})) {
       try {
         const notification = new Notification('Secretary', {body:msg.text.slice(0, 200), tag:'secretary-reply'});
         notification.onclick = () => { notification.close(); window.focus(); openSecretary(); };
       } catch {}
     }
-    if (msg.type === 'draftChanged' && msg.sessionId === selected && msg.from !== draftFrom && document.activeElement?.id !== 'message') { draftToken++; clearTimeout(draftPending.get(selected)?.timer); draftPending.delete(selected); message = msg.text; }
+    drafts.receive(msg, document.activeElement?.id === 'message');
     if (msg.type === 'notesChanged' && msg.sessionId === selected) notesRevision++;
     if (msg.type === 'speech_start') speech.start();
     if (msg.type === 'speech_event' && voiceTimings.has(msg.voiceTimingId)) voiceTimings.get(msg.voiceTimingId).event ??= performance.now();
@@ -249,49 +220,15 @@
       return;
     }
     const sent = video ? {id:crypto.randomUUID(), sessionId:video.id, text:'', images:[video], immediate} : {id:crypto.randomUUID(), sessionId:selected, text:message, images, immediate};
-    const previous = deliveries.get(sent.sessionId) ?? Promise.resolve();
-    let finish;
-    const delivery = new Promise(resolve => { finish = resolve; });
-    deliveries.set(sent.sessionId, delivery);
     if (!video) { message = ''; images = []; scheduleDraft(''); }
-    preparing = [...preparing, sent];
     if (!interruptStates[sent.sessionId]?.pending) interruptFeedback.clear(sent.sessionId);
-    try {
-      const results = await Promise.all(sent.images.map(image => image.ready));
-      sent.images = sent.images.map((image, index) => ({...image, processing:false, error:results[index].error}));
-      const failed = results.find(result => result.error);
-      if (failed) throw new Error(failed.error);
-      await previous;
-      let offset = 0;
-      const descriptions = results.map(result => {
-        const start = offset; offset += result.frames.length;
-        return result.description?.replace('Кадры по порядку:', `Кадры по порядку, начиная с изображения ${start + 1}:`);
-      }).filter(Boolean);
-      const frames = results.flatMap(result => result.frames);
-      const files = await Promise.all(results.filter(result => result.file).map(async result => {
-        const response = await fetch(`/files?name=${encodeURIComponent(result.file.name)}`, {method:'POST', headers:{'Content-Type':result.file.type || 'application/octet-stream'}, body:result.file});
-        if (!response.ok) throw new Error(await response.text());
-        return response.json();
-      }));
-      if (JSON.stringify(frames).length > 29 * 1024 * 1024) throw new Error('Вложения слишком большие для отправки');
-      await connection.request({type:'send', id:sent.sessionId, text:[sent.text, ...descriptions].filter(Boolean).join('\n\n'), images:frames, files, immediate});
-      preparing = preparing.filter(item => item.id !== sent.id);
-      sent.images.forEach(image => { if (image.url) URL.revokeObjectURL(image.url); });
-    } catch (err) {
-      const detail = err.disconnected ? 'Не удалось подтвердить доставку. Проверьте историю перед повторной отправкой.' : err.message;
-      preparing = preparing.map(item => item.id === sent.id ? {...item, error:detail} : item);
-    } finally {
-      await previous;
-      finish();
-      if (deliveries.get(sent.sessionId) === delivery) deliveries.delete(sent.sessionId);
-    }
+    await delivery.send(sent);
   }
   function restorePreparing(id) {
     if (message.trim() || images.length) return;
-    const item = preparing.find(entry => entry.id === id);
+    const item = delivery.restore(id);
     if (!item) return;
     message = item.text; images = item.images; scheduleDraft(message);
-    preparing = preparing.filter(entry => entry.id !== id);
   }
   // Запись хранится в памяти, пока её текст не принят: при ошибке её можно отправить повторно.
   async function sendVoice(item) {
@@ -327,7 +264,6 @@
   function openSettings() { settingsOpen = true; }
   function openRename() { newName = title; settingsOpen = false; renameOpen = true; }
   function rename() { if (!connected || !newName.trim()) return; error = ''; command({type:'rename', id:selected, name:newName}); renameOpen = false; }
-  // A separate chat in the folder of the current one, starting from an empty context.
   async function createThread({harness, model, reasoning, name}) {
     if (!current) return;
     try {
@@ -367,7 +303,7 @@
     return grouped;
   }
   // Queued messages are not accepted by the agent yet, so they come after history.
-  $: groupedHistory = groupSteps(insertVoices(mergeSwitches(history.filter(m => !['sudo', 'skill', 'secret'].includes(m.kind) || !m.status)).map(m => ['sudo', 'skill', 'secret'].includes(m.kind) ? {...m, status: history.findLast(e => e.kind === m.kind && e.id === m.id && e.status)?.status} : m).map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})), voiceMessages.filter(item => item.id === selected)), current?.status === 'running');
+  $: groupedHistory = groupSteps(insertVoices(mergeSwitches(mergeApprovals(history)).map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})), voiceMessages.filter(item => item.id === selected)), current?.status === 'running');
   $: messages = [
     ...groupedHistory,
     ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:[...item.images, ...(item.files || [])], urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
@@ -380,7 +316,7 @@
     try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-20).map(m => ({...m, images:m.images?.filter(image => !image.video || image.video.time === 0)})), hasMore:historyHasMore || history.length > 20})); } catch { localStorage.removeItem('last-chat'); }
   }
   $: current = sessions.find(s => s.id === selected);
-  $: voiceProps = {turn, sessionId:selected, running:current?.status === 'running', processing:voiceMessages.some(item => item.id === selected && item.speech && !item.error), speaking:playing, speechFinishedId, connected, openedAt:voiceOpenedAt, onstart:() => { micPress(); recordStart(); }, onvoice:item => sendVoice({...item, speech:true}), onphoto:image => connection.request({type:'send', id:selected, text:'Снимок с камеры', images:[image]}), oncamera:setCamera, onscreenshot:overlayBridge?.screenshot ? async () => { const data = await overlayBridge.screenshot(); if (!data) throw new Error('Снимок экрана недоступен'); await connection.request({type:'send', id:selected, text:'Экран на момент нажатия Power', images:[{type:'image/jpeg', data}]}); } : undefined, onstopspeech:stopSpeech};
+  $: voiceProps = {turn, sessionId:selected, running:current?.status === 'running', processing:voiceMessages.some(item => item.id === selected && item.speech && !item.error), speaking:playing, speechFinishedId, connected, openedAt:voiceOpenedAt, onstart:() => { micPress(); recordStart(); }, onvoice:item => sendVoice({...item, speech:true}), onphoto:image => connection.request({type:'send', id:selected, text:'Снимок с камеры', images:[image]}), oncamera:camera.set, onscreenshot:overlayBridge?.screenshot ? async () => { const data = await overlayBridge.screenshot(); if (!data) throw new Error('Снимок экрана недоступен'); await connection.request({type:'send', id:selected, text:'Экран на момент нажатия Power', images:[{type:'image/jpeg', data}]}); } : undefined, onstopspeech:stopSpeech};
   $: title = current?.name || (current?.secretary ? 'Secretary' : `Сессия #${selected}`);
 
   // Высота поля ввода и высота экранной клавиатуры (iOS не сжимает layout viewport, поэтому берём visualViewport).
@@ -474,10 +410,9 @@
 
     <div bind:this={chatViewport} class="relative flex min-h-0 flex-1 flex-col">
       {#key historyVersion}
-        <MessageList onskill={(type, skillId) => connection.request({type, skillId})} onsudo={(type, sudoId, password) => connection.request({type, sudoId, ...(password ? {password} : {})})} {messages} {sessions} {historyLoaded} {connected} historyHasMore={historyHasMore} {historyLoadingOlder} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} oncancelVoice={item => voiceMessages = voiceMessages.filter(v => v.key !== item.key)} />
+        <MessageList ondecide={(kind, id, approved, password) => connection.request({type: `${kind}${approved ? 'Approve' : 'Reject'}`, [kind === 'skill' ? 'skillId' : 'sudoId']: id, ...(password ? {password} : {})})} {messages} {sessions} {historyLoaded} {historyLoading} {historyError} {historyOlderError} onretryHistory={() => loadHistory(selected, false, historyLoaded)} {connected} historyHasMore={historyHasMore} {historyLoadingOlder} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} oncancelVoice={item => voiceMessages = voiceMessages.filter(v => v.key !== item.key)} />
       {/key}
 
-      <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
         <div class="pointer-events-auto">
           {#if interruptStates[selected]?.message}<p role="status" aria-live="polite" class="mx-auto max-w-3xl px-4 text-sm text-neutral-400">{interruptStates[selected].message}</p>{/if}

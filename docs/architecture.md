@@ -4,7 +4,7 @@
 
 ## Коротко
 
-Secretary — одна программа на Bun, которая работает на Host. Она запускает Claude Code и Codex по подписке пользователя, хранит их историю в SQLite и даёт пользователю один чат с Secretary Agent. Secretary Agent отвечает сам или поручает работу Specialists через MCP-инструмент `delegate`. Своей модели у продукта нет: весь интеллект живёт в harness.
+Secretary — одна программа на Bun, которая работает на Host. Она запускает Claude Code и Codex по подписке пользователя и OpenCode через PAG, хранит их историю в SQLite и даёт пользователю один чат с Secretary Agent. Secretary Agent отвечает сам или поручает работу Specialists через MCP-инструмент `delegate`. Своей модели у продукта нет: весь интеллект живёт в harness.
 
 ```
 Телефон (Capacitor) / браузер
@@ -15,7 +15,7 @@ Cloudflare Tunnel (app.scrtrbot.ru) ─▶ 127.0.0.1:3000 на Host
 ┌──────────────────── secretary (Bun + TypeScript) ────────────────────┐
 │ index.ts    HTTP, WebSocket, вход по коду сопряжения, MCP на :3001   │
 │ session.ts  очередь сообщений, ход, прерывание, статус               │
-│ claude.ts / codex.ts  протоколы harness (один интерфейс Turn)        │
+│ claude.ts / codex.ts / opencode.ts  протоколы harness (один интерфейс Turn) │
 │ chat.ts     сырые события harness → сообщения чата                   │
 │ SQLite      sessions, events, pending_messages                       │
 └──────────────────────────────────────────────────────────────────────┘
@@ -44,11 +44,11 @@ Android-приложение — оболочка Capacitor, которая за
 - `sessions.ts` — все Session на Host и правила для них: загрузка после перезапуска, создание с проверкой модели и reasoning, настройки, удаление, отчёт Specialist родителю.
 - `session.ts` — Session: ход, прерывание, Immediate message, остановка, статусы `idle` / `running` / `interrupted` / `stopped`.
 - `queue.ts` — очередь сообщений одной Session. Сообщение покидает её ровно один раз: попадает в историю, отменяется (`cancelled`) или помечается `delivery_uncertain`, и всё это одной транзакцией.
-- `harness.ts`, `claude.ts`, `codex.ts` — адаптеры. Каждый реализует один ход (`Turn`) по контракту из `harness.ts`: сообщить об отправке и приёме, выдать события, по `AbortSignal` прервать ход (до отправки — не отправлять), вернуть «ход завершён успешно или нет».
-- `chat.ts` — единственное место, которое знает, как событие Claude Code или Codex превращается в сообщение чата, и формат отчёта `[report #id harness folder]` ([ADR 0007](adr/0007-chat-messages-built-on-server.md)).
+- `harness.ts`, `claude.ts`, `codex.ts`, `opencode.ts` — адаптеры. Каждый реализует один ход (`Turn`) по контракту из `harness.ts`: сообщить об отправке и приёме, выдать события, по `AbortSignal` прервать ход (до отправки — не отправлять), вернуть «ход завершён успешно или нет». OpenCode говорит ACP (`opencode acp`, JSON-RPC по stdin/stdout, приватный сервер на ход) — выбор транспорта записан в [ADR 0010](adr/0010-opencode-over-acp.md).
+- `chat.ts` — единственное место, которое знает, как событие Claude Code, Codex или OpenCode превращается в сообщение чата, и формат отчёта `[report #id harness folder]` ([ADR 0007](adr/0007-chat-messages-built-on-server.md)).
 - `models.ts` — списки моделей и уровней reasoning у самих harness, с кэшем в памяти.
 
-Тесты: `session.test.ts` проверяет `Sessions`, `Session` и очередь в процессе, на базе `:memory:` и сценарном `Turn` вместо настоящих harness. `harness.test.ts` проверяет контракт адаптеров на фейковых `claude` и `codex` из `test-fixtures/`.
+Тесты: `session.test.ts` проверяет `Sessions`, `Session` и очередь в процессе, на базе `:memory:` и сценарном `Turn` вместо настоящих harness. `harness.test.ts` проверяет контракт адаптеров на фейковых `claude`, `codex` и `opencode` из `test-fixtures/`.
 
 ### Хранилище
 
@@ -65,7 +65,7 @@ SQLite в `server/secretary.sqlite`:
 ## Как проходит сообщение
 
 1. Клиент шлёт `send`. Сервер сохраняет сообщение в `pending_messages` и только потом подтверждает отправку клиенту.
-2. Если Session свободна, начинается ход. Адаптер запускает harness (Claude Code с `--resume`, Codex через `app-server` и `thread/resume`) и передаёт сообщение.
+2. Если Session свободна, начинается ход. Адаптер запускает harness (Claude Code с `--resume`, Codex через `app-server` и `thread/resume`, OpenCode через `acp` и `session/resume`) и передаёт сообщение.
 3. Когда harness принял сообщение, оно одной транзакцией переходит из очереди в историю. Клиент видит его как отправленное.
 4. События хода пишутся в `events`. Те, из которых получается сообщение чата, сразу уходят клиенту.
 5. После хода процесс harness закрывается, статус становится `idle`. Следующее сообщение снова поднимает harness через resume.
@@ -73,7 +73,7 @@ SQLite в `server/secretary.sqlite`:
 
 **Смена модели.** Чат Session не прерывается: настройки меняются, в историю пишется событие `model_switch`, клиент рисует его разделителем. Смена модели или reasoning внутри harness продолжает ту же сессию через resume. При смене harness сессия harness начинается заново, и первый ход получает переписку из истории: сообщения пользователя и ответы агента, самые свежие, примерно до 30k токенов (`chatTranscript`).
 
-**Immediate message.** Если пользователь отправляет сообщение во время хода, ход прерывается, и сообщение уходит следующим. Claude Code прерывается control-запросом, Codex — `turn/interrupt`. Если harness не ответил за 10 секунд, процесс убивается. Сообщения, отправленные кнопкой «в очередь», ждут конца хода.
+**Immediate message.** Если пользователь отправляет сообщение во время хода, ход прерывается, и сообщение уходит следующим. Claude Code прерывается control-запросом, Codex — `turn/interrupt`, OpenCode — уведомлением `session/cancel`. Если harness не ответил за 10 секунд, процесс убивается. Сообщения, отправленные кнопкой «в очередь», ждут конца хода.
 
 **Надёжность.** Сообщение, которое уже передано harness, но приём которого не подтвердился (например, Secretary упал), не отправляется повторно. Оно помечается как `delivery_uncertain`, чтобы агент не выполнил задачу дважды.
 
@@ -81,7 +81,7 @@ SQLite в `server/secretary.sqlite`:
 
 Каждый harness запускается через `setsid`, то есть в своей группе процессов. Остановка Session убивает всю группу вместе с инструментами, которые запустил агент. Если падает сам Secretary, остатки убивает systemd (`KillMode=control-group` в `deploy/secretary.service`) ([ADR 0006](adr/0006-systemd-owns-harness-processes.md)).
 
-Агенты работают с полным доступом и без подтверждений: Claude Code с `--dangerously-skip-permissions`, Codex с `danger-full-access`. Песочницы пока нет.
+Агенты работают с полным доступом и без подтверждений: Claude Code с `--dangerously-skip-permissions`, Codex с `danger-full-access`, OpenCode с `permissions allow-all` через `OPENCODE_CONFIG_CONTENT`. Песочницы пока нет.
 
 ## Развёртывание сейчас
 

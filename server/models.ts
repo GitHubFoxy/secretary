@@ -1,4 +1,7 @@
 import { readJsonLines } from './harness';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 type ModelDetails = { id: string; aliases?: string[]; supportedReasoningEfforts: { reasoningEffort: string }[] };
 
@@ -59,7 +62,57 @@ async function codexModels(): Promise<ModelDetails[]> {
   return models;
 }
 
-const loaders: Record<string, () => Promise<ModelDetails[]>> = { claude: claudeModels, codex: codexModels };
+// Effort levels differ per model ('default' means reasoning untouched, so it is not a level).
+export function parseOpencodeModels(models: string[], efforts: Record<string, string[]>): ModelDetails[] {
+  return models.map(id => ({
+    id,
+    supportedReasoningEfforts: (efforts[id] ?? []).filter(level => level !== 'default').map(reasoningEffort => ({ reasoningEffort })),
+  }));
+}
+
+async function opencodeModels(): Promise<ModelDetails[]> {
+  const root = mkdtempSync(join(tmpdir(), 'secretary-opencode-models-'));
+  try {
+    const p = Bun.spawn(['opencode', 'acp'], { cwd: root, stdin: 'pipe', stdout: 'pipe', stderr: 'ignore',
+      env: { ...process.env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ permissions: [{ action: '*', resource: '*', effect: 'allow' }] }) },
+      signal: AbortSignal.timeout(120_000) });
+    const send = (message: object) => { p.stdin.write(JSON.stringify(message) + '\n'); p.stdin.flush(); };
+    let id = 0;
+    // Model switches resolve out of order, so each response is matched by its request id.
+    const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
+    const request = (method: string, params: object): Promise<any> => new Promise((resolve, reject) => {
+      pending.set(++id, { resolve, reject });
+      send({ jsonrpc: '2.0', id, method, params });
+    });
+    const reading = readJsonLines(p.stdout, msg => {
+      if (msg.method || msg.id === undefined) return;
+      const waiter = pending.get(msg.id);
+      pending.delete(msg.id);
+      if (msg.error) waiter?.reject(new Error(msg.error.message ?? 'OpenCode не ответил'));
+      else waiter?.resolve(msg.result);
+    });
+    try {
+      await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+      const session = await request('session/new', { cwd: root, mcpServers: [] });
+      const sessionId = session.sessionId;
+      const models: string[] = [];
+      for (const option of session.configOptions ?? []) if (option.id === 'model') for (const item of option.options ?? []) models.push(item.value);
+      if (!models.length) throw new Error('OpenCode вернул пустой список моделей');
+      const efforts: Record<string, string[]> = {};
+      for (const model of models) {
+        const updated = await request('session/set_config_option', { sessionId, configId: 'model', value: model });
+        for (const option of updated.configOptions ?? []) if (option.id === 'effort') efforts[model] = (option.options ?? []).map((item: any) => item.value);
+      }
+      // The listing session is empty: delete it so model lookups don't fill the OpenCode history.
+      await request('session/delete', { sessionId });
+      return parseOpencodeModels(models, efforts);
+    } finally { p.kill(); await reading.catch(() => {}); }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+const loaders: Record<string, () => Promise<ModelDetails[]>> = { claude: claudeModels, codex: codexModels, opencode: opencodeModels };
 const cache = new Map<string, Promise<ModelDetails[]>>();
 
 // Asking a harness for its models takes seconds, so validation reuses the last list. The settings screen asks for a fresh one.

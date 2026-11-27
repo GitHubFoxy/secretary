@@ -64,7 +64,6 @@ export function spawnHarness(args: string[], cwd: string, { interrupt, stop }: P
   };
 }
 
-// Reads JSON lines until the stream ends or onLine returns false.
 export async function readJsonLines(stream: ReadableStream<Uint8Array>, onLine: (message: any) => void | boolean) {
   const decoder = new TextDecoder();
   let buffer = '';

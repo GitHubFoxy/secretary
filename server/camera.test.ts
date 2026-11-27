@@ -20,6 +20,6 @@ test('кадр приходит только от клиента с камеро
     expect(await readFile(await result)).toEqual(Buffer.from(data, 'base64'));
     const interrupted = camera.request();
     camera.remove(client);
-    expect(interrupted).rejects.toThrow('Камера не включена');
+    await expect(interrupted).rejects.toThrow('Камера не включена');
   } finally { await rm(root, {recursive:true, force:true}); }
 });

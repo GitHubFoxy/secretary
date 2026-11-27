@@ -19,3 +19,16 @@ test('проверяет формат, содержимое, размер и ч�
   expect(() => validateImages(Array(64).fill(png))).toThrow();
   expect(() => validateImages([{...png, data:Buffer.alloc(5 * 1024 * 1024 + 1).toString('base64')}])).toThrow();
 });
+
+
+test('изображения и кадры сохраняют ссылки на разные оригиналы, старые изображения остаются допустимы', () => {
+  const data = Buffer.from([255,216,255,1]).toString('base64');
+  const first = crypto.randomUUID(), second = crypto.randomUUID();
+  const images = [
+    {type:'image/jpeg', data, originalId:first},
+    {type:'image/jpeg', data, originalId:second, video:{seconds:2, time:0}},
+    {type:'image/jpeg', data},
+  ];
+  expect(validateImages(images)).toEqual(images);
+  expect(() => validateImages([{...images[0], originalId:'not-an-id'}])).toThrow();
+});

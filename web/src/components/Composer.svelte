@@ -1,7 +1,9 @@
 <script>
-  import { onDestroy, tick } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import Icon from './Icon.svelte';
-  import { filterCommands } from '../slash-commands.js';
+  import { clipboardImages } from '../clipboard-images.js';
+  import { receiveImeImage } from '../ime-image.js';
+  import { filterCommands, slashToken } from '../slash-commands.js';
   import AttachmentPopover from './AttachmentPopover.svelte';
   import AttachmentStrip from './AttachmentStrip.svelte';
   import VideoRecorderOverlay from './VideoRecorderOverlay.svelte';
@@ -13,8 +15,9 @@
   let commands = $state([]), commandError = $state(''), menuClosed = $state(false), selectedCommand = $state(0), requestToken = 0;
   let cursor = $state(0), references = $state([]), referenceError = $state(''), referenceToken = 0;
   let atMatch = $derived(/(?:^|\s)@([^\s@]*)$/.exec(value.slice(0, cursor)));
-  let matches = $derived(atMatch ? references : filterCommands(commands, value));
-  let menuOpen = $derived(!menuClosed && (!!atMatch || /^\/[^\s]*$/.test(value)));
+  let slashMatch = $derived(slashToken(value.slice(0, cursor)));
+  let matches = $derived(atMatch ? references : filterCommands(commands, value.slice(0, cursor)));
+  let menuOpen = $derived(!menuClosed && (!!atMatch || !!slashMatch));
   $effect(() => {
     const id = sessionId, query = atMatch?.[1], token = ++referenceToken;
     references = []; referenceError = '';
@@ -31,8 +34,25 @@
   function choose(command) {
     let position;
     if (atMatch) { const start = cursor - atMatch[1].length - 1; value = value.slice(0, start) + command.value + ' ' + value.slice(cursor); position = start + command.value.length + 1; }
-    else { value = `/${command.name}${command.name === 'compact' ? '' : ' '}`; position = value.length; }
+    else {
+      const start = cursor - slashMatch[1].length - 1;
+      const end = cursor + /^[^\s/]*/.exec(value.slice(cursor))[0].length;
+      const before = value.slice(0, start), after = value.slice(end);
+      const standaloneCompact = command.name === 'compact' && !before.trim() && !after.trim();
+      const separator = standaloneCompact || /^\s/.test(after) ? '' : ' ';
+      const text = `/${command.name}${separator}`;
+      value = before + text + after;
+      position = start + text.length;
+    }
     menuClosed = true; oninput?.(value); tick().then(() => { area?.focus(); area?.setSelectionRange(position, position); cursor = position; });
+  }
+  function moveCursor(position) {
+    const tokenStart = pos => {
+      const match = /(?:^|\s)[/@]([^\s/@]*)$/.exec(value.slice(0, pos));
+      return match ? pos - match[1].length - 1 : -1;
+    };
+    if (tokenStart(position) !== tokenStart(cursor)) { menuClosed = false; selectedCommand = 0; }
+    cursor = position;
   }
   let imageError = $state(''), attachOpen = $state(false);
   let area = $state();
@@ -108,7 +128,6 @@
     } else recorder = new MediaRecorder(media);
     recorder.ondataavailable = event => chunks.push(event.data);
     recorder.start();
-    // Полоски у таймера показывают, что микрофон слышит голос.
     audio = new AudioContext();
     const analyser = audio.createAnalyser(), samples = new Uint8Array(512);
     audio.createMediaStreamSource(media).connect(analyser);
@@ -206,8 +225,26 @@
     if (image.url) URL.revokeObjectURL(image.url);
     images = images.filter(item => item !== image);
   }
+  onMount(() => {
+    const ime = window.SecretaryIme;
+    if (!ime) return;
+    ime.onmessage = ({data}) => {
+      receiveImeImage(data, {
+        fetchFile: id => fetch(`/.secretary-ime/${encodeURIComponent(id)}`, {cache:'no-store'}),
+        isFocused: expected => String(sessionId) === expected && document.activeElement === area && !disabled,
+        add: file => add([file]),
+        done: id => ime.postMessage(JSON.stringify({action:'done', id})),
+      }).catch(error => { imageError = error.message; });
+    };
+    return () => { ime.onmessage = null; ime.postMessage(JSON.stringify({action:'blur'})); };
+  });
+  function imeFocus(action) { window.SecretaryIme?.postMessage(JSON.stringify({action, session:String(sessionId)})); }
+  $effect(() => {
+    void sessionId;
+    if (area && document.activeElement === area) imeFocus('focus');
+  });
   function paste(e) {
-    const files = Array.from(e.clipboardData?.files || []).filter(file => file.type.startsWith('image/'));
+    const files = clipboardImages(e.clipboardData);
     if (files.length) { e.preventDefault(); add(files); }
   }
 
@@ -215,7 +252,6 @@
     if (!disabled && (value.trim() || images.length)) onsubmit(running);
   }
 
-  // Срочная отправка нужна только во время работы агента.
   // На сенсорном экране (основной ввод — палец) Enter переносит строку, отправка — кнопкой.
   const touch = matchMedia('(pointer: coarse)').matches;
   function keydown(e) {
@@ -273,10 +309,12 @@
       bind:this={area}
       bind:value
       oninput={event => { cursor = event.target.selectionStart; menuClosed = false; selectedCommand = 0; oninput?.(event.target.value); }}
-      onclick={event => { cursor = event.target.selectionStart; }}
-      onkeyup={event => { cursor = event.target.selectionStart; }}
+      onclick={event => moveCursor(event.target.selectionStart)}
+      onkeyup={event => moveCursor(event.target.selectionStart)}
       onkeydown={keydown}
       onpaste={paste}
+      onfocus={() => imeFocus('focus')}
+      onblur={() => imeFocus('blur')}
       placeholder="Напишите сообщение"
       class="max-h-40 min-h-10 flex-1 resize-none bg-transparent [scrollbar-width:none] [&::-webkit-scrollbar]:hidden px-2 py-2 text-[15px] text-neutral-100 placeholder:text-neutral-600 focus:outline-none"
     ></textarea>

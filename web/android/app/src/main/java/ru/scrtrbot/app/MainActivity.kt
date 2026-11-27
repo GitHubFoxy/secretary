@@ -14,6 +14,10 @@ import android.os.Environment
 import android.widget.Toast
 import android.webkit.PermissionRequest
 import com.getcapacitor.BridgeWebChromeClient
+import com.getcapacitor.BridgeWebViewClient
+import android.webkit.WebView
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import com.getcapacitor.BridgeActivity
 import com.getcapacitor.CapConfig
 import org.json.JSONObject
@@ -23,6 +27,11 @@ class MainActivity : BridgeActivity() {
 
     public override fun onResume() { super.onResume(); resumed = this }
     public override fun onPause() { resumed = null; super.onPause() }
+
+    override fun load() {
+        HostAddress.get(this)?.let { findViewById<ComposerWebView>(com.getcapacitor.android.R.id.webview).enableImages(it) }
+        super.load()
+    }
 
     public override fun onCreate(savedInstanceState: Bundle?) {
         val host = HostAddress.get(this)
@@ -34,6 +43,10 @@ class MainActivity : BridgeActivity() {
         registerPlugin(SharePlugin::class.java)
         registerPlugin(DownloadsPlugin::class.java)
         super.onCreate(savedInstanceState)
+        bridge.webViewClient = object : BridgeWebViewClient(bridge) {
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+                (view as ComposerWebView).imageRequest(request) ?: super.shouldInterceptRequest(view, request)
+        }
         bridge.webView.webChromeClient = object : BridgeWebChromeClient(bridge) {
             override fun onPermissionRequest(request: PermissionRequest) {
                 val expected = host?.let { Uri.parse(it) }

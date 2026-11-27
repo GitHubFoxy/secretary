@@ -22,6 +22,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import android.widget.FrameLayout
@@ -85,13 +86,16 @@ class AssistantSession(private val service: AssistantSessionService) : VoiceInte
             return uri.scheme == origin.scheme && uri.host == origin.host && port(uri) == port(origin)
         }
         webView?.let { root.removeView(it); it.destroy() }
-        val sheet = WebView(service).apply {
+        val sheet = ComposerWebView(service, null).apply {
+            enableImages(host)
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
             // Шторку рисует веб-интерфейс, вокруг неё должно быть видно приложение под ней.
             setBackgroundColor(Color.TRANSPARENT)
             webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+                    (view as ComposerWebView).imageRequest(request) ?: super.shouldInterceptRequest(view, request)
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
                     !isHost(request.url)
             }
@@ -146,7 +150,13 @@ class AssistantSession(private val service: AssistantSessionService) : VoiceInte
         root.addView(sheet, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
 
-    override fun onHide() { screenshot = null; ReplyService.overlayVisible = false; super.onHide() }
+    override fun onHide() {
+        screenshot = null
+        ReplyService.overlayVisible = false
+        webView?.let { root.removeView(it); it.destroy() }
+        webView = null
+        super.onHide()
+    }
 
     override fun onBackPressed() { hide() }
 

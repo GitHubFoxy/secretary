@@ -47,3 +47,17 @@ export class Memory {
     unlinkSync(path);
   }
 }
+
+export function memorySettings(request: Request, url: URL, memory: Memory) {
+  try {
+    const name = url.searchParams.get('name');
+    if (request.method === 'GET') return Response.json(name === null ? memory.list() : memory.read(name));
+    if (request.method === 'PUT' || request.method === 'DELETE') return request.json().then(data => {
+      if (!name) throw new Error('Укажите имя файла');
+      if (request.method === 'PUT') return Response.json(memory.write(name, data.text, data.version));
+      memory.delete(name, data.version);
+      return new Response(null, {status: 204});
+    }).catch(error => new Response(String(error), {status: 400}));
+    return new Response(null, {status: 405});
+  } catch (error) { return new Response(String(error), {status: 400}); }
+}

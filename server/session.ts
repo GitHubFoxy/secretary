@@ -42,7 +42,6 @@ export class Session {
   private stopped = false;
   private deleted = false;
   private listeners: ((event: any, cursor?: number) => void)[] = [];
-  // Called with the last answer when a turn completes on its own.
   onComplete?: (answer: string) => void;
   onUsageLimit?: (limit: { resetsAt?: number }) => void;
 
@@ -107,6 +106,7 @@ export class Session {
     if (typeof text !== 'string') throw new Error('Некорректный текст сообщения');
     const images = validateImages(input);
     const files = validateFiles(inputFiles);
+    if (images.some(image => image.originalId && !files.some(file => file.id === image.originalId))) throw new Error('Оригинал изображения не найден среди вложений');
     if (!text.trim() && !images.length && !files.length) throw new Error('Сообщение пустое');
     if (this.deleted) throw new Error('Сессия удалена');
     this.stopped = false;
@@ -137,7 +137,6 @@ export class Session {
     this.finish(turn, completed, failure);
   }
 
-  // Files from the agent appear in the chat like its answer; the turn goes on.
   showFiles(files: FileAttachment[], text: string) { this.emit({ type: 'agent_files', text, files }); }
 
   sendQueued(id: unknown) {
