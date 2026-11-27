@@ -1,6 +1,7 @@
 <script>
   import { onDestroy, tick } from 'svelte';
   import Icon from './Icon.svelte';
+  import { clipboardImages } from '../clipboard-images.js';
   import { filterCommands, slashToken } from '../slash-commands.js';
   import AttachmentPopover from './AttachmentPopover.svelte';
   import AttachmentStrip from './AttachmentStrip.svelte';
@@ -224,7 +225,7 @@
     images = images.filter(item => item !== image);
   }
   function paste(e) {
-    const files = Array.from(e.clipboardData?.files || []).filter(file => file.type.startsWith('image/'));
+    const files = clipboardImages(e.clipboardData);
     if (files.length) { e.preventDefault(); add(files); }
   }
 
