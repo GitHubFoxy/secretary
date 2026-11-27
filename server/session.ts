@@ -1,5 +1,5 @@
 import type { Database } from 'bun:sqlite';
-import { agentAnswer, chatTranscript, usageLimit } from './chat';
+import { agentAnswer, chatTranscript, friendlyErrorMessage, usageLimit } from './chat';
 import { writeEvent } from './database';
 import type { Turn, TurnOptions } from './harness';
 import { validateImages } from './images';
@@ -237,8 +237,9 @@ export class Session {
     // The queue goes on once the turn's messages have left it, whichever way. A failure before dispatch keeps them queued,
     // so a broken launch does not loop; resumePending or the next message retries.
     if (!this.stopped && !turn.items.some(item => this.queue.has(item)) && this.queue.length) void this.next();
+    // The parent gets a short Russian hint; the raw failure stays in this Session's events for logs and MCP.
     if (failure && !completed && !turn.limit && !turn.userInterrupt && !this.stopped && !turn.restarting) {
-      try { this.onComplete?.(`Ход упал: ${failure.split('\n')[0].slice(0, 500)}`); } catch (error) { console.error('Report failed', error); }
+      try { this.onComplete?.(`Ход упал: ${friendlyErrorMessage(failure)}`); } catch (error) { console.error('Report failed', error); }
     }
     if (completed && !turn.userInterrupt && turn.items.length) {
       try { this.onComplete?.(turn.answer); } catch (error) { console.error('Report failed', error); }

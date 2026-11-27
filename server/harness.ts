@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import type { Image } from './images';
 
 // One turn of a harness. Session owns the queue and history; the adapter only speaks the harness protocol.
@@ -26,10 +28,34 @@ export function onAbort(signal: AbortSignal, callback: () => void) {
   else signal.addEventListener('abort', callback, { once: true });
 }
 
+// setsid by absolute path: Bun finds it by name even without PATH, but an absolute path removes
+// any doubt about PATH lookup and makes ENOENT messages unambiguous (then it is the cwd, not the binary).
+function setsidBinary() {
+  for (const path of ['/usr/bin/setsid', '/bin/setsid']) {
+    try { if (existsSync(path)) return path; } catch {}
+  }
+  return 'setsid';
+}
+
+function safeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  if (env.PATH) return env;
+  return { ...env, PATH: process.env.PATH || `${homedir()}/.bun/bin:${homedir()}/.local/bin:/usr/local/bin:/usr/bin:/bin` };
+}
+
 // On Linux setsid puts the harness in its own process group, so one signal stops it together with the tools it started.
 // If Secretary itself dies, systemd kills whatever is left (secretary.service uses KillMode=control-group).
 export function spawnHarness(args: string[], cwd: string, { interrupt, stop }: Pick<TurnOptions, 'interrupt' | 'stop'>, env: NodeJS.ProcessEnv = process.env) {
-  const child = Bun.spawn(process.platform === 'linux' ? ['setsid', ...args] : args, { cwd, env, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
+  // A missing session folder (deleted worktree, moved project) is the usual cause of
+  // "ENOENT: no such file or directory, posix_spawn setsid": fail early with a marker
+  // that chat.ts turns into a Russian hint, instead of a raw posix_spawn error.
+  if (!existsSync(cwd)) throw new Error(`SESSION_FOLDER_MISSING: нет папки ${cwd}`);
+  let child: ReturnType<typeof Bun.spawn>;
+  try {
+    child = Bun.spawn(process.platform === 'linux' ? [setsidBinary(), ...args] : args, { cwd, env: safeEnv(env), stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
+  } catch (error) {
+    if (error instanceof Error && /posix_spawn|enoent|executable not found/i.test(error.message)) throw new Error(`SPAWN_FAILED: ${error.message}`);
+    throw error;
+  }
   // The journal keeps the whole stderr; the owner sees its end when the harness dies.
   let stderrTail = '';
   const decoder = new TextDecoder();

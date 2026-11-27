@@ -401,7 +401,7 @@ test('лимит создаёт событие, отчёт родителю и �
   expect(schedules[0].text).toBe('Лимит подписки сбросился, продолжи работу с того места, где остановился');
   sessions.schedules.tick(at + 60_000);
   expect(calls[2].text).toContain('Лимит подписки сбросился, продолжи работу с того места, где остановился');
-  expect(sessions.schedules.list([child.id])[0].next_run).toBeNull();
+  expect(sessions.schedules.list([child.id])).toHaveLength(0);
 });
 
 test('лимит без времени назначает продолжение через 30 минут', async () => {
@@ -415,11 +415,12 @@ test('лимит без времени назначает продолжение
   expect(schedule.next_run!).toBeLessThanOrEqual(Date.now() + 30 * 60_000);
 });
 
-test('при ошибке хода родитель получает один отчёт', async () => {
+test('при ошибке хода родитель получает один понятный отчёт без сырого текста', async () => {
   const { calls, create } = setup();
   const parent = await create();
   const child = await create({ parentId: parent.id });
   child.send('задача'); calls[0].start(); calls[0].fail(); await tick();
   expect(calls).toHaveLength(2);
-  expect(calls[1].text).toBe(`[report #${child.id} claude /tmp] Ход упал: spawn failed`);
+  expect(calls[1].text).toBe(`[report #${child.id} claude /tmp] Ход упал: Неожиданная ошибка — попробуйте повторить. Если повторяется, загляните в журнал службы на Host.`);
+  expect(calls[1].text).not.toContain('spawn failed');
 });

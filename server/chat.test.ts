@@ -35,9 +35,38 @@ test('ошибки хода видны в чате и не выглядят ка
   expect(chatMessage({ type: 'result', is_error: true, result: 'Not logged in · Please run /login' }))
     .toEqual({ kind: 'error', text: 'Claude Code не вошёл в подписку. На Host выполните: claude auth login' });
   expect(chatMessage({ type: 'result', is_error: true, result: 'другая ошибка' }))
-    .toEqual({ kind: 'error', text: 'другая ошибка' });
+    .toEqual({ kind: 'error', text: 'Неожиданная ошибка — попробуйте повторить. Если повторяется, загляните в журнал службы на Host.' });
   expect(chatMessage({ method: 'turn/completed', params: { turn: { error: { message: 'ошибка Codex' } } } }))
-    .toEqual({ kind: 'error', text: 'ошибка Codex' });
+    .toEqual({ kind: 'error', text: 'Неожиданная ошибка — попробуйте повторить. Если повторяется, загляните в журнал службы на Host.' });
+});
+
+test('сырые технические ошибки показываются коротко по-русски', () => {
+  const irony = [
+    ['SQLiteError: database is locked', 'База данных временно занята — попробуйте повторить через пару секунд.'],
+    ['Error: ENOENT: no such file or directory, posix_spawn setsid', 'Не удалось запустить агента: нет папки Session или программы на Host. Проверьте папку и установку, затем повторите.'],
+    ['Error: SESSION_FOLDER_MISSING: нет папки /tmp/gone', 'Не удалось запустить агента: нет папки Session или программы на Host. Проверьте папку и установку, затем повторите.'],
+    ['Claude Code завершился с кодом 1: Invalid API key · Please run /login', 'Claude Code не вошёл в подписку. На Host выполните: claude auth login'],
+    ['Codex завершился с кодом 1: connection refused', 'Агент неожиданно завершился. Подробности — в журнале службы на Host, попробуйте повторить.'],
+    ['Error: fetch failed: getaddrinfo EAI_AGAIN api.anthropic.com', 'Похоже, пропала связь с провайдером. Проверьте интернет на Host и попробуйте повторить.'],
+    ['Error: spawn failed', 'Неожиданная ошибка — попробуйте повторить. Если повторяется, загляните в журнал службы на Host.'],
+  ] as const;
+  const raws = ['SQLiteError', 'ENOENT', 'posix_spawn', 'Invalid API key', 'connection refused', 'EAI_AGAIN', 'spawn failed', 'SESSION_FOLDER_MISSING'];
+  for (const [raw, text] of irony) {
+    for (const event of [
+      { type: 'error', message: raw },
+      { type: 'result', is_error: true, result: raw },
+      { method: 'turn/completed', params: { turn: { error: { message: raw } } } },
+    ]) {
+      expect(chatMessage(event)).toEqual({ kind: 'error', text });
+      for (const leak of raws) {
+        if (!text.includes(leak)) expect((chatMessage(event) as { text: string }).text).not.toContain(leak);
+      }
+    }
+  }
+  expect(chatMessage({ type: 'error', message: 'Error: Codex не вошёл в подписку. На Host выполните: codex login --device-auth' }))
+    .toEqual({ kind: 'error', text: 'Codex не вошёл в подписку. На Host выполните: codex login --device-auth' });
+  expect(chatMessage({ type: 'error', message: 'Агент завершился без подтверждения сообщения' }))
+    .toEqual({ kind: 'error', text: 'Агент завершился без подтверждения сообщения' });
 });
 
 test('прерывание хода не создаёт сообщение в чате', () => {
