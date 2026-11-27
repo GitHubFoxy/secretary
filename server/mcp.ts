@@ -1,4 +1,4 @@
-import { Skills } from './skills';
+import type { Skills } from './skills';
 import { readFileSync } from 'node:fs';
 import { hostPath, mcpPort, secretaryFolder, previewUrl } from './config';
 import { publishHtml } from './preview';
@@ -8,8 +8,8 @@ import { specialistModel } from './persona';
 import { isSpecialist, SECRETARY_ID } from './session';
 import type { Sessions } from './sessions';
 import { createWorktree } from './worktree';
-import { Sudo } from './sudo';
-import { Secrets } from './secrets';
+import type { Sudo } from './sudo';
+import type { Secrets } from './secrets';
 
 const issuesUrl = 'https://github.com/GitHubFoxy/secretary/issues/new';
 
@@ -239,7 +239,8 @@ export function toolsFor(isSecretary: boolean, harnesses: string[]) {
   return toolDefinitions(isSecretary, harnesses).map(({call, ...schema}) => schema);
 }
 
-export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList, root = secretaryFolder, previewBase = previewUrl, sudo = new Sudo((id, event) => sessions.get(id).emit(event)), secrets = new Secrets(root, (id, event) => sessions.get(id).emit(event)), skills = new Skills(root, (id, event) => sessions.get(id).emit(event)) , cameraFrame = async (): Promise<string> => { throw new Error('Камера не включена'); } } = {}) {
+export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList, root = secretaryFolder, previewBase = previewUrl, cameraFrame = async (): Promise<string> => { throw new Error('Камера не включена'); } } = {}) {
+  const { sudo, secrets, skills } = sessions.approvals;
 
   async function availableModels() {
     const result: Record<string, { id: string; reasoning: string[] }[]> = {};

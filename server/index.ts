@@ -1,4 +1,3 @@
-import { Skills } from './skills';
 import { agentView } from './observability';
 import { cameraRequests } from './camera';
 import { servePreview } from './preview';
@@ -13,8 +12,6 @@ import { fileResponse, saveFile } from './files';
 import { migrateDatabase, openDatabase } from './database';
 import { serveMcp } from './mcp';
 import { Memory } from './memory';
-import { Sudo } from './sudo';
-import { Secrets } from './secrets';
 import { ExternalMcp } from './external-mcp';
 import { getDraft, saveDraft } from './drafts';
 import { listNotes, saveNote, deleteNote } from './notes';
@@ -58,10 +55,6 @@ const sessions = new Sessions(db, {
   },
 });
 
-const skills = new Skills(secretaryFolder, (id, event) => sessions.get(id).emit(event));
-const secrets = new Secrets(secretaryFolder, (id, event) => sessions.get(id).emit(event));
-const sudo = new Sudo((id, event) => sessions.get(id).emit(event));
-
 // Browsers send Origin; a foreign one is rejected. Requests without Origin (curl) pass.
 function sameOrigin(request: Request, url: URL) {
   const origin = request.headers.get('origin');
@@ -84,12 +77,12 @@ const commands: Record<string, (cmd: any, send: (message: object) => void) => un
     return { references: [...agents.map(s => ({label:`@${s.name || 'Session'} (#${s.id})`, value:`@${s.name || 'Session'} (#${s.id})`})), ...files.map(path => ({label:path, value:path}))] };
   },
   slashCommands: async cmd => { const {harness, folder} = sessions.get(cmd.id).info; return {commands: await slashCommands(harness, folder)}; },
-  skillApprove: cmd => skills.approve(cmd.skillId),
-  skillReject: cmd => skills.reject(cmd.skillId),
-  secretApprove: cmd => secrets.approve(cmd.sudoId, cmd.password),
-  secretReject: cmd => secrets.reject(cmd.sudoId),
-  sudoApprove: cmd => sudo.approve(cmd.sudoId, cmd.password),
-  sudoReject: cmd => sudo.reject(cmd.sudoId),
+  skillApprove: cmd => sessions.approvals.skills.approve(cmd.skillId),
+  skillReject: cmd => sessions.approvals.skills.reject(cmd.skillId),
+  secretApprove: cmd => sessions.approvals.secrets.approve(cmd.sudoId, cmd.password),
+  secretReject: cmd => sessions.approvals.secrets.reject(cmd.sudoId),
+  sudoApprove: cmd => sessions.approvals.sudo.approve(cmd.sudoId, cmd.password),
+  sudoReject: cmd => sessions.approvals.sudo.reject(cmd.sudoId),
   draft: cmd => ({text: getDraft(db, sessions.get(cmd.id).id)}),
   draftSave: cmd => { const session = sessions.get(cmd.id); if (typeof cmd.from !== 'string') throw new Error('Некорректный id вкладки'); saveDraft(db, session.id, cmd.text); publish({type:'draftChanged', sessionId:session.id, text:cmd.text, from:cmd.from}); },
   notes: cmd => ({notes: listNotes(db, sessions.get(cmd.id).id)}),
@@ -152,7 +145,7 @@ const server = Bun.serve({
 
 // Loading and resuming sessions can publish events.
 sessions.load(secretaryFolder);
-serveMcp(sessions, { sudo, secrets, skills, cameraFrame: () => camera.request() });
+serveMcp(sessions, { cameraFrame: () => camera.request() });
 servePreview();
 sessions.resumePending();
 sessions.schedules.tick();
@@ -216,10 +209,10 @@ function handleRequest(request: Request, server: any) {
     if (url.pathname === '/settings/skills') {
       try {
         const name = url.searchParams.get('name');
-        if (request.method === 'GET') return Response.json(name ? skills.details(name) : skills.list().map(n => skills.details(n)));
+        if (request.method === 'GET') return Response.json(name ? sessions.approvals.skills.details(name) : sessions.approvals.skills.list().map(n => sessions.approvals.skills.details(n)));
         if (!name) throw new Error('Укажите имя skill');
-        if (request.method === 'DELETE') { skills.delete(name); return new Response(null, {status: 204}); }
-        if (request.method === 'POST') return request.json().then(data => { skills.restore(name, data.version); return new Response(null, {status: 204}); }).catch(error => new Response(String(error), {status: 400}));
+        if (request.method === 'DELETE') { sessions.approvals.skills.delete(name); return new Response(null, {status: 204}); }
+        if (request.method === 'POST') return request.json().then(data => { sessions.approvals.skills.restore(name, data.version); return new Response(null, {status: 204}); }).catch(error => new Response(String(error), {status: 400}));
         return new Response(null, {status: 405});
       } catch (error) { return new Response(String(error), {status: 400}); }
     }

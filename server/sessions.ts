@@ -1,3 +1,6 @@
+import { Skills } from './skills';
+import { Secrets } from './secrets';
+import { Sudo } from './sudo';
 import { Schedules } from './schedules';
 import { recall } from './database';
 import type { Database } from 'bun:sqlite';
@@ -24,6 +27,7 @@ type Options = {
 // All Sessions of the Host and the rules for them. The browser and the Secretary Agent (through MCP) are two adapters over this.
 export class Sessions {
   readonly schedules: Schedules;
+  approvals!: { skills: Skills; secrets: Secrets; sudo: Sudo };
   private all = new Map<number, Session>();
   private folder = '';
   private tokens = new Map<number, string>();
@@ -41,6 +45,8 @@ export class Sessions {
   // their messages already in flight become delivery_uncertain inside each queue.
   load(secretaryFolder: string) {
     this.folder = secretaryFolder;
+    const emit = (id: number, event: object) => this.get(id).emit(event);
+    this.approvals = { skills: new Skills(secretaryFolder, emit), secrets: new Secrets(secretaryFolder, emit), sudo: new Sudo(emit) };
     const rows = this.db.query('SELECT * FROM sessions ORDER BY id').all() as SessionRow[];
     if (!rows.length) this.insert({ harness: 'claude', model: 'opus', reasoning: null, folder: secretaryFolder });
     else for (const row of rows) {
