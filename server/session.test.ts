@@ -424,3 +424,21 @@ test('при ошибке хода родитель получает один п
   expect(calls[1].text).toBe(`[report #${child.id} claude /tmp] Ход упал: Неожиданная ошибка — попробуйте повторить. Если повторяется, загляните в журнал службы на Host.`);
   expect(calls[1].text).not.toContain('spawn failed');
 });
+
+test('перезапуск сбрасывает opencode-сессии на session/new, остальные не трогает', async () => {
+  const db = openDatabase(':memory:');
+  const noop: Turn = async () => true;
+  const options = { turns: { claude: noop, codex: noop, opencode: noop }, checkModel: async () => {}, onEvent() {}, onChange() {} };
+  const sessions = new Sessions(db, options);
+  sessions.load('/home/u/.secretary');
+  const opencode = await sessions.create({ harness: 'opencode', model: 'm', reasoning: null, folder: '/tmp', parentId: 1 });
+  const claude = await sessions.create({ harness: 'claude', model: 'm', reasoning: null, folder: '/tmp', parentId: 1 });
+  db.query('UPDATE sessions SET harness_session_id = ? WHERE id = ?').run('opencode-session', opencode.id);
+  db.query('UPDATE sessions SET harness_session_id = ? WHERE id = ?').run('claude-thread', claude.id);
+  const restored = new Sessions(db, options);
+  restored.load('/home/u/.secretary');
+  // Следующий ход opencode пойдёт через session/new с историей из базы, а не через отравленный resume.
+  expect(restored.get(opencode.id).info.harness_session_id).toBeNull();
+  expect((db.query('SELECT harness_session_id AS h FROM sessions WHERE id = ?').get(opencode.id) as { h: unknown }).h).toBeNull();
+  expect(restored.get(claude.id).info.harness_session_id).toBe('claude-thread');
+});

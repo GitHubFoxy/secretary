@@ -47,10 +47,19 @@ export class Sessions {
     const rows = this.db.query('SELECT * FROM sessions ORDER BY id').all() as SessionRow[];
     if (!rows.length) this.insert({ harness: 'claude', model: 'opus', reasoning: null, folder: secretaryFolder });
     else for (const row of rows) {
+      // OpenCode держит MCP-серверы в своей сессии: неудачное рукопожатие (рестарт застал resume)
+      // навсегда выкидывает инструменты secretary из её каталога, а resume их не возвращает —
+      // лечит только session/new. Поэтому после рестарта opencode-сессии начинают заново,
+      // а история подставляется из базы тем же путём, что при смене harness.
+      const hadHarnessSession = row.harness_session_id;
+      if (row.harness === 'opencode' && row.harness_session_id) {
+        row.harness_session_id = null;
+        this.db.query('UPDATE sessions SET harness_session_id = NULL WHERE id = ?').run(row.id);
+      }
       const session = this.attach(row);
       if (row.status === 'running') this.db.transaction(() => {
         this.db.query("UPDATE sessions SET status = 'interrupted' WHERE id = ?").run(row.id);
-        if (row.harness_session_id) session.queue.add('Secretary перезапустился посреди твоего хода. Продолжи работу с того места, где остановился; если всё уже сделано — коротко подведи итог.', [], true, false, undefined, [], true);
+        if (hadHarnessSession) session.queue.add('Secretary перезапустился посреди твоего хода. Продолжи работу с того места, где остановился; если всё уже сделано — коротко подведи итог.', [], true, false, undefined, [], true);
       })();
     }
   }
