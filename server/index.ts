@@ -7,6 +7,7 @@ import { findFiles } from './references';
 import { chatPage, chatMessage } from './chat';
 import { claudeTurn } from './claude';
 import { codexRateLimits, codexTurn } from './codex';
+import { opencodeTurn } from './opencode';
 import { port, secretaryFolder } from './config';
 import { fileResponse, saveFile } from './files';
 import { migrateDatabase, openDatabase } from './database';
@@ -41,7 +42,7 @@ const speech = new Speech(message => speechTarget?.(message));
 function stopSpeech() { speech.stop(); speechTarget?.({type:'speech_cancel'}); speechTarget = undefined; speechOwner = undefined; }
 const publishSessions = () => publish({ type: 'sessions', sessions: sessions.list() });
 const sessions = new Sessions(db, {
-  turns: { claude: claudeTurn, codex: codexTurn },
+  turns: { claude: claudeTurn, codex: codexTurn, opencode: opencodeTurn },
   checkModel: checkReasoning,
   onChange: publishSessions,
   // The browser gets chat messages, the queue and interrupt results; other raw events stay in SQLite.

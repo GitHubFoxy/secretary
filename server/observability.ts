@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { claudeLaunch } from './claude';
 import { codexLaunch, codexThreadStart } from './codex';
+import { opencodeLaunch } from './opencode';
 import { toolsFor } from './mcp';
 import { ExternalMcp } from './external-mcp';
 import { Memory } from './memory';
@@ -38,7 +39,7 @@ export async function agentView(root: string, sessions: Sessions, id?: string | 
     if (context.mcpToken) sensitive.push(context.mcpToken);
     const signal = new AbortController().signal;
     const options: TurnOptions = { ...context, folder: info.folder, model: info.model, reasoning: info.reasoning, resumeId: info.harness_session_id, secretary: info.id === SECRETARY_ID, interrupt: signal, stop: signal, onSessionId() {}, onEvent() {}, onDispatching() {}, onAccepted() {} };
-    const launch = info.harness === 'claude' ? await claudeLaunch(options) : await codexLaunch(options);
+    const launch = info.harness === 'claude' ? await claudeLaunch(options) : info.harness === 'codex' ? await codexLaunch(options) : await opencodeLaunch(options);
     for (const [key, value] of Object.entries(launch.env)) if (key.startsWith('SECRETARY_MCP_') && value) sensitive.push(value);
     result.session = { harness: info.harness, args: launch.args, ...(info.harness === 'codex' ? { threadStart: await codexThreadStart(options) } : {}), systemPrompt: info.harness === 'codex' ? (await codexThreadStart(options)).developerInstructions : options.systemPrompt ?? '' };
   }
