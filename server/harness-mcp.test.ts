@@ -41,7 +41,8 @@ for (const role of ['secretary', 'specialist'] as const) {
     try {
       const { args, env } = await codexLaunch({ model: 'x', mcpRoot: root, mcpRole: role } as any);
       const flat = args.join(' ');
-      expect(flat).toContain('mcp_servers."parallel".url');
+      expect(flat).toContain('mcp_servers.parallel.url');
+      expect(flat).not.toContain('"parallel"');
       expect(flat).toContain((parallel as any).url);
       expect(Object.values(env as Record<string, string>)).toContain('Bearer test-key');
     } finally { await rm(root, { recursive: true, force: true }); }

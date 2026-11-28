@@ -18,12 +18,16 @@ export async function codexLaunch(options: import('./harness').TurnOptions) {
   if (options.mcpUrl) args.push('-c', `mcp_servers.secretary.url="${options.mcpUrl}"`, '-c', `mcp_servers.secretary.http_headers.Authorization="Bearer ${options.mcpToken}"`);
   const {env, servers} = await prepareMcp(options.mcpRoot, options.mcpRole);
   for (const {server, mapped} of servers) {
-    const prefix = `mcp_servers.${JSON.stringify(server.name)}`;
+    // Имена — как есть, без кавычек: validate() пускает только [A-Za-z0-9_-],
+    // всё это безопасно в dotted-ключах codex. JSON.stringify давал буквальные
+    // кавычки в имени ('"parallel"'), и codex отвергал сервер:
+    // Invalid MCP server name ... must match ^[a-zA-Z0-9_:@/.-]+$.
+    const prefix = `mcp_servers.${server.name}`;
     if (server.type === 'stdio') {
       args.push('-c', `${prefix}.command=${JSON.stringify(process.execPath)}`, '-c', `${prefix}.args=${JSON.stringify([`${import.meta.dir}/mcp-exec.ts`, server.command, JSON.stringify(server.args), JSON.stringify(mapped)])}`, '-c', `${prefix}.env_vars=${JSON.stringify(Object.values(mapped))}`);
     } else {
       args.push('-c', `${prefix}.url=${JSON.stringify(server.url)}`);
-      for (const [name, key] of Object.entries(mapped)) args.push('-c', `${prefix}.env_http_headers.${JSON.stringify(name)}=${JSON.stringify(key)}`);
+      for (const [name, key] of Object.entries(mapped)) args.push('-c', `${prefix}.env_http_headers.${name}=${JSON.stringify(key)}`);
     }
   }
   return { args, env };
